@@ -94,6 +94,7 @@
       text-decoration: none
     }
 
+    /*
     a:hover {
       text-decoration: underline
     }
@@ -109,7 +110,7 @@
       font-family: inherit
     }
 
-    /* Typography */
+    Typography
     .text-xl {
       font-size: 1.75rem;
       font-weight: 600;
@@ -123,6 +124,7 @@
       line-height: 1.75rem;
       letter-spacing: -0.02em
     }
+    */
 
     .text-md {
       font-size: 1.125rem;
@@ -1349,23 +1351,24 @@
       }
     }
 
-    /* ── LOGIN PAGE ──────────────────────────────── */
+    /* ── LOGIN PAGE & AUTH ──────────────────────── */
     .login-page {
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      background: var(--surface-container)
+      background: var(--surface-container);
+      padding: 24px;
     }
 
     .login-card {
       background: var(--surface-card);
       border: 1px solid var(--border);
       border-radius: var(--radius-xl);
-      padding: 40px;
+      padding: 36px 32px;
       width: 100%;
-      max-width: 400px;
-      box-shadow: var(--shadow-lg)
+      max-width: 440px;
+      box-shadow: var(--shadow-lg);
     }
 
     .login-logo {
@@ -1373,13 +1376,127 @@
       align-items: center;
       gap: 8px;
       justify-content: center;
-      margin-bottom: 24px
+      margin-bottom: 20px;
     }
 
     .login-logo-text {
       font-size: 1.375rem;
       font-weight: 600;
-      color: var(--on-surface)
+      color: var(--on-surface);
+    }
+
+    .login-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+      gap: 4px;
+    }
+
+    .login-tab-btn {
+      flex: 1;
+      padding: 8px 12px;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--on-surface-secondary);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: all .15s;
+      text-align: center;
+    }
+
+    .login-tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      font-weight: 600;
+    }
+
+    .demo-role-box {
+      margin-top: 24px;
+      padding-top: 16px;
+      border-top: 1px dashed var(--border);
+    }
+
+    .demo-role-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .demo-role-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      background: var(--surface-container-low);
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: all .15s;
+      text-align: left;
+    }
+
+    .demo-role-btn:hover {
+      border-color: var(--accent);
+      background: var(--accent-bg);
+    }
+
+    .demo-role-btn strong {
+      font-size: 0.75rem;
+      color: var(--on-surface);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .demo-role-btn span {
+      font-size: 0.6875rem;
+      color: var(--on-surface-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      width: 100%;
+    }
+
+    .auth-alert {
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      font-size: 0.8125rem;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .auth-alert-error {
+      background: var(--red-bg);
+      color: var(--red-text);
+      border: 1px solid var(--red-border);
+    }
+
+    .sidebar-logout-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      margin-top: 8px;
+      padding: 6px 8px;
+      border-radius: var(--radius);
+      border: 1px solid transparent;
+      background: none;
+      color: var(--on-surface-secondary);
+      font-size: 0.75rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all .15s;
+    }
+
+    .sidebar-logout-btn:hover {
+      background: var(--red-bg);
+      color: var(--red-text);
+      border-color: var(--red-border);
     }
 
     /* Utility */
@@ -1477,9 +1594,15 @@
       ? 'http://localhost:5000'
       : (window.location.protocol === 'file:' ? 'http://localhost:5000' : '');
 
-    // ── State ──────────────────────────────────────────────────────
-    let currentUser = { name: 'Eleanor Vance', role: 'Sr. Talent Partner', email: 'eleanor@aihire.io' };
-    let isLoggedIn = true;
+    // ── State & Authentication ────────────────────────────────────
+    let authToken = localStorage.getItem('aihire_token') || null;
+    let currentUser = null;
+    try {
+      const u = localStorage.getItem('aihire_user');
+      if (u) currentUser = JSON.parse(u);
+    } catch (e) { currentUser = null; }
+    let isLoggedIn = !!(authToken && currentUser);
+    let authMode = 'login'; // 'login' or 'register'
 
     // ── Utility ────────────────────────────────────────────────────
     function $(s, el) { return (el || document).querySelector(s); }
@@ -1490,8 +1613,28 @@
 
     async function api(path, opts = {}) {
       try {
+        opts.headers = opts.headers || {};
+        if (authToken) {
+          if (opts.headers instanceof Headers) {
+            opts.headers.set('Authorization', `Bearer ${authToken}`);
+          } else {
+            opts.headers['Authorization'] = `Bearer ${authToken}`;
+          }
+        }
         const res = await fetch(API + path, opts);
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          if (isLoggedIn) {
+            authToken = null;
+            currentUser = null;
+            isLoggedIn = false;
+            localStorage.removeItem('aihire_token');
+            localStorage.removeItem('aihire_user');
+            toast('Session expired. Please sign in again.', 'error');
+            navigate('/login');
+          }
+          throw new Error(data.error || 'Authentication required.');
+        }
         if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
         return data;
       } catch (e) {
@@ -1559,7 +1702,29 @@
         navigate('/login');
         return;
       }
-      const hash = window.location.hash || '#/dashboard';
+      if (isLoggedIn && window.location.hash === '#/login') {
+        navigate(currentUser?.role === 'candidate' ? '/candidate-portal' : '/dashboard');
+        return;
+      }
+
+      const defaultHash = currentUser?.role === 'candidate' ? '#/candidate-portal' : '#/dashboard';
+      const hash = window.location.hash || defaultHash;
+
+      // Role permission guards
+      const userRole = (currentUser?.role || '').toLowerCase();
+      if (userRole === 'candidate') {
+        if (hash === '#/dashboard' || hash.startsWith('#/candidates') || hash === '#/analytics' || hash === '#/settings') {
+          navigate('/candidate-portal');
+          return;
+        }
+      } else if (userRole === 'hiring_manager') {
+        if (hash === '#/analytics' || hash === '#/settings') {
+          toast('Analytics and settings are restricted to Administrators and Recruiters.', 'error');
+          navigate('/dashboard');
+          return;
+        }
+      }
+
       const match = matchRoute(hash);
       if (match) {
         try {
@@ -1568,9 +1733,10 @@
           renderApp(`<div class="error-state"><span class="material-symbols-outlined" style="font-size:48px;color:var(--red)">error</span><p style="margin-top:8px;font-size:0.9375rem;font-weight:600">Something went wrong</p><p style="margin-top:4px;font-size:0.8125rem;color:var(--on-surface-secondary)">${esc(e.message)}</p><button class="btn btn-secondary mt-4" onclick="handleRoute()"><span class="material-symbols-outlined">refresh</span>Retry</button></div>`);
         }
       } else {
-        navigate('/dashboard');
+        navigate(defaultHash);
       }
-      // Update active nav
+
+      // Update active nav link
       $$('.sidebar-nav a').forEach(a => {
         const href = a.getAttribute('href');
         a.classList.toggle('active', hash.startsWith(href));
@@ -1581,52 +1747,220 @@
 
     // ── Layout ──────────────────────────────────────────────────────
     function renderApp(pageContent) {
+      const role = (currentUser?.role || '').toLowerCase();
+      let navItems = '';
+      let headerTitle = 'Talent Operations';
+
+      if (role === 'candidate') {
+        headerTitle = 'Candidate Career Portal';
+        navItems = `
+          <a href="#/candidate-portal" data-path="candidate-portal"><span class="material-symbols-outlined">space_dashboard</span>My Portal</a>
+          <a href="#/jobs" data-path="jobs"><span class="material-symbols-outlined">work_outline</span>Explore Jobs</a>
+          <a href="#/screening" data-path="screening"><span class="material-symbols-outlined">fact_check</span>My Applications</a>
+        `;
+      } else if (role === 'hiring_manager') {
+        headerTitle = 'Hiring Manager Portal';
+        navItems = `
+          <a href="#/dashboard" data-path="dashboard"><span class="material-symbols-outlined">dashboard</span>Overview</a>
+          <a href="#/jobs" data-path="jobs"><span class="material-symbols-outlined">work_outline</span>Department Jobs</a>
+          <a href="#/candidates" data-path="candidates"><span class="material-symbols-outlined">group</span>Candidates</a>
+          <a href="#/applications" data-path="applications"><span class="material-symbols-outlined">description</span>Pipeline</a>
+          <a href="#/screening" data-path="screening"><span class="material-symbols-outlined">fact_check</span>Screening Reports</a>
+        `;
+      } else {
+        headerTitle = role === 'admin' ? 'Enterprise Administration' : 'Talent Operations';
+        navItems = `
+          <a href="#/dashboard" data-path="dashboard"><span class="material-symbols-outlined">dashboard</span>Dashboard</a>
+          <a href="#/jobs" data-path="jobs"><span class="material-symbols-outlined">work_outline</span>Jobs</a>
+          <a href="#/candidates" data-path="candidates"><span class="material-symbols-outlined">group</span>Candidates</a>
+          <a href="#/applications" data-path="applications"><span class="material-symbols-outlined">description</span>Applications</a>
+          <a href="#/screening" data-path="screening"><span class="material-symbols-outlined">fact_check</span>Screening</a>
+          <a href="#/analytics" data-path="analytics"><span class="material-symbols-outlined">analytics</span>Analytics</a>
+          <div class="sidebar-divider"></div>
+          <a href="#/settings" data-path="settings"><span class="material-symbols-outlined">settings</span>Settings</a>
+        `;
+      }
+
+      const roleBadgeLabel = role === 'admin' ? 'Administrator' : role === 'hiring_manager' ? 'Hiring Manager' : role === 'candidate' ? 'Job Seeker' : 'Recruiter';
+
       document.getElementById('app').innerHTML = `
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-logo">
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect x="2" y="2" width="11" height="11" rx="3" fill="#0F172A"/><rect x="15" y="2" width="11" height="11" rx="3" fill="#2563EB"/><rect x="2" y="15" width="11" height="11" rx="3" fill="#2563EB" opacity="0.5"/><rect x="15" y="15" width="11" height="11" rx="3" fill="#0F172A" opacity="0.7"/></svg>
         <span class="sidebar-logo-text">AIHire</span>
-        <span class="sidebar-logo-badge">ATS Core</span>
+        <span class="sidebar-logo-badge">${esc(roleBadgeLabel)}</span>
       </div>
       <nav class="sidebar-nav">
-        <a href="#/dashboard" data-path="dashboard"><span class="material-symbols-outlined">dashboard</span>Dashboard</a>
-        <a href="#/jobs" data-path="jobs"><span class="material-symbols-outlined">work_outline</span>Jobs</a>
-        <a href="#/candidates" data-path="candidates"><span class="material-symbols-outlined">group</span>Candidates</a>
-        <a href="#/applications" data-path="applications"><span class="material-symbols-outlined">description</span>Applications</a>
-        <a href="#/screening" data-path="screening"><span class="material-symbols-outlined">fact_check</span>Screening</a>
-        <a href="#/analytics" data-path="analytics"><span class="material-symbols-outlined">analytics</span>Analytics</a>
-        <div class="sidebar-divider"></div>
-        <a href="#/settings" data-path="settings"><span class="material-symbols-outlined">settings</span>Settings</a>
+        ${navItems}
       </nav>
       <div class="sidebar-user">
         <div class="sidebar-user-inner">
-          <div class="sidebar-avatar">${initials(currentUser.name)}</div>
+          <div class="sidebar-avatar">${initials(currentUser?.name)}</div>
           <div class="sidebar-user-info">
-            <div class="sidebar-user-name">${esc(currentUser.name)}</div>
-            <div class="sidebar-user-role">${esc(currentUser.role)}</div>
+            <div class="sidebar-user-name">${esc(currentUser?.name || 'User')}</div>
+            <div class="sidebar-user-role">${esc(currentUser?.email || '')}</div>
           </div>
         </div>
+        <button class="sidebar-logout-btn" onclick="doLogout()">
+          <span class="material-symbols-outlined" style="font-size:16px">logout</span>Sign Out
+        </button>
       </div>
     </aside>
     <header class="header">
       <div class="header-left">
         <button class="mobile-menu-btn" onclick="document.getElementById('sidebar').classList.toggle('open')"><span class="material-symbols-outlined">menu</span></button>
         <span class="header-breadcrumb">Workspace /</span>
-        <span class="header-title">Talent Operations</span>
+        <span class="header-title">${headerTitle}</span>
       </div>
       <div class="header-right">
-        <div class="header-search">
-          <span class="material-symbols-outlined">search</span>
-          <input type="text" placeholder="Search candidates, jobs..." id="globalSearch" onkeydown="if(event.key==='Enter')handleGlobalSearch(this.value)"/>
-          <span class="header-kbd">⌘K</span>
-        </div>
-        <button class="btn btn-primary btn-sm" onclick="openScreenModal()">
-          <span class="material-symbols-outlined">add</span>Screen Resume
-        </button>
+        ${role !== 'candidate' ? `
+          <div class="header-search">
+            <span class="material-symbols-outlined">search</span>
+            <input type="text" placeholder="Search candidates, jobs..." id="globalSearch" onkeydown="if(event.key==='Enter')handleGlobalSearch(this.value)"/>
+            <span class="header-kbd">⌘K</span>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="openScreenModal()">
+            <span class="material-symbols-outlined">add</span>Screen Resume
+          </button>
+        ` : `
+          <button class="btn btn-accent btn-sm" onclick="openScreenModal()">
+            <span class="material-symbols-outlined">upload_file</span>Upload Resume
+          </button>
+        `}
       </div>
     </header>
     <main class="main"><div class="page" id="pageContent">${pageContent}</div></main>
   `;
+    }
+
+    // ── Authentication Actions ──────────────────────────────────────
+    function switchAuthMode(mode) {
+      authMode = mode;
+      renderLoginPage();
+    }
+
+    function fillDemo(email, password) {
+      if (authMode !== 'login') {
+        authMode = 'login';
+        renderLoginPage();
+      }
+      const e = document.getElementById('loginEmail');
+      const p = document.getElementById('loginPassword');
+      if (e) e.value = email;
+      if (p) p.value = password;
+      doLogin(email, password);
+    }
+
+    async function doLogin(emailParam, passwordParam) {
+      const errEl = document.getElementById('authError');
+      if (errEl) { errEl.textContent = ''; errEl.classList.add('hidden'); }
+
+      const email = emailParam || document.getElementById('loginEmail')?.value.trim();
+      const password = passwordParam || document.getElementById('loginPassword')?.value;
+
+      if (!email || !password) {
+        if (errEl) { errEl.textContent = 'Please enter both email and password.'; errEl.classList.remove('hidden'); }
+        return;
+      }
+
+      const btn = document.getElementById('loginBtn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Signing in...'; }
+
+      try {
+        const res = await fetch(API + '/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Login failed');
+
+        authToken = data.token;
+        currentUser = data.user;
+        isLoggedIn = true;
+        localStorage.setItem('aihire_token', authToken);
+        localStorage.setItem('aihire_user', JSON.stringify(currentUser));
+
+        toast(`Signed in as ${currentUser.name} (${currentUser.role})`);
+        if (currentUser.role === 'candidate') {
+          navigate('/candidate-portal');
+        } else {
+          navigate('/dashboard');
+        }
+      } catch (err) {
+        if (errEl) {
+          errEl.textContent = err.message;
+          errEl.classList.remove('hidden');
+        } else {
+          toast(err.message, 'error');
+        }
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Sign In'; }
+      }
+    }
+
+    async function doRegister() {
+      const errEl = document.getElementById('authError');
+      if (errEl) { errEl.textContent = ''; errEl.classList.add('hidden'); }
+
+      const name = document.getElementById('regName')?.value.trim();
+      const email = document.getElementById('regEmail')?.value.trim();
+      const password = document.getElementById('regPassword')?.value;
+      const role = document.getElementById('regRole')?.value || 'candidate';
+
+      if (!name || !email || !password) {
+        if (errEl) { errEl.textContent = 'Please fill out all required fields.'; errEl.classList.remove('hidden'); }
+        return;
+      }
+
+      const btn = document.getElementById('regBtn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Creating account...'; }
+
+      try {
+        const res = await fetch(API + '/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, email, password, role })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Registration failed');
+
+        authToken = data.token;
+        currentUser = data.user;
+        isLoggedIn = true;
+        localStorage.setItem('aihire_token', authToken);
+        localStorage.setItem('aihire_user', JSON.stringify(currentUser));
+
+        toast(`Welcome to AIHire, ${currentUser.name}!`);
+        navigate('/candidate-portal');
+      } catch (err) {
+        if (errEl) {
+          errEl.textContent = err.message;
+          errEl.classList.remove('hidden');
+        } else {
+          toast(err.message, 'error');
+        }
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Create Candidate Account'; }
+      }
+    }
+
+    async function doLogout() {
+      try {
+        if (authToken) {
+          await fetch(API + '/api/auth/logout', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${authToken}` }
+          });
+        }
+      } catch (e) {}
+      authToken = null;
+      currentUser = null;
+      isLoggedIn = false;
+      localStorage.removeItem('aihire_token');
+      localStorage.removeItem('aihire_user');
+      toast('Signed out successfully.');
+      navigate('/login');
     }
 
     function renderLoginPage() {
@@ -1637,25 +1971,66 @@
           <svg width="32" height="32" viewBox="0 0 28 28" fill="none"><rect x="2" y="2" width="11" height="11" rx="3" fill="#0F172A"/><rect x="15" y="2" width="11" height="11" rx="3" fill="#2563EB"/><rect x="2" y="15" width="11" height="11" rx="3" fill="#2563EB" opacity="0.5"/><rect x="15" y="15" width="11" height="11" rx="3" fill="#0F172A" opacity="0.7"/></svg>
           <span class="login-logo-text">AIHire</span>
         </div>
-        <p style="text-align:center;color:var(--on-surface-secondary);margin-bottom:24px;font-size:0.875rem">Sign in to your talent operations workspace</p>
-        <div class="form-group">
-          <label class="form-label">Email</label>
-          <input class="form-input" type="email" id="loginEmail" value="eleanor@aihire.io" placeholder="you@company.com"/>
+        <p style="text-align:center;color:var(--on-surface-secondary);margin-bottom:16px;font-size:0.875rem">AI-Powered Talent Intelligence Platform</p>
+
+        <div class="login-tabs">
+          <button class="login-tab-btn ${authMode === 'login' ? 'active' : ''}" onclick="switchAuthMode('login')">Sign In</button>
+          <button class="login-tab-btn ${authMode === 'register' ? 'active' : ''}" onclick="switchAuthMode('register')">Create Account</button>
         </div>
-        <div class="form-group">
-          <label class="form-label">Password</label>
-          <input class="form-input" type="password" id="loginPassword" value="password" placeholder="••••••••"/>
+
+        <div id="authError" class="auth-alert auth-alert-error hidden"></div>
+
+        ${authMode === 'login' ? `
+          <div class="form-group">
+            <label class="form-label">Email Address</label>
+            <input class="form-input" type="email" id="loginEmail" value="eleanor@aihire.io" placeholder="name@company.com" onkeydown="if(event.key==='Enter')doLogin()"/>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Password</label>
+            <input class="form-input" type="password" id="loginPassword" value="Recruiter@123" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"/>
+          </div>
+          <button class="btn btn-primary btn-lg w-full mt-2" id="loginBtn" onclick="doLogin()" style="justify-content:center">Sign In</button>
+        ` : `
+          <div class="form-group">
+            <label class="form-label">Full Name</label>
+            <input class="form-input" type="text" id="regName" placeholder="e.g. Jordan Lee"/>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Email Address</label>
+            <input class="form-input" type="email" id="regEmail" placeholder="jordan@example.com"/>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Password <span class="form-label-sub">Min 6 characters</span></label>
+            <input class="form-input" type="password" id="regPassword" placeholder="••••••••" onkeydown="if(event.key==='Enter')doRegister()"/>
+          </div>
+          <input type="hidden" id="regRole" value="candidate"/>
+          <button class="btn btn-accent btn-lg w-full mt-2" id="regBtn" onclick="doRegister()" style="justify-content:center">Create Candidate Account</button>
+        `}
+
+        <div class="demo-role-box">
+          <div style="font-size:0.75rem;font-weight:600;color:var(--on-surface-secondary);text-transform:uppercase;letter-spacing:0.04em">Quick Demo Logins</div>
+          <div class="demo-role-grid">
+            <button class="demo-role-btn" type="button" onclick="fillDemo('admin@aihire.io', 'Admin@123')">
+              <strong><span class="chip chip-red" style="font-size:10px;padding:1px 5px">Admin</span> Alexander V.</strong>
+              <span>admin@aihire.io</span>
+            </button>
+            <button class="demo-role-btn" type="button" onclick="fillDemo('eleanor@aihire.io', 'Recruiter@123')">
+              <strong><span class="chip chip-blue" style="font-size:10px;padding:1px 5px">Recruiter</span> Eleanor V.</strong>
+              <span>eleanor@aihire.io</span>
+            </button>
+            <button class="demo-role-btn" type="button" onclick="fillDemo('manager@aihire.io', 'Manager@123')">
+              <strong><span class="chip chip-amber" style="font-size:10px;padding:1px 5px">Hiring Mgr</span> Marcus T.</strong>
+              <span>manager@aihire.io</span>
+            </button>
+            <button class="demo-role-btn" type="button" onclick="fillDemo('candidate@aihire.io', 'Candidate@123')">
+              <strong><span class="chip chip-green" style="font-size:10px;padding:1px 5px">Candidate</span> Sophia C.</strong>
+              <span>candidate@aihire.io</span>
+            </button>
+          </div>
         </div>
-        <button class="btn btn-primary btn-lg w-full mt-2" onclick="doLogin()" style="justify-content:center">Sign In</button>
-        <p style="text-align:center;margin-top:16px;font-size:0.75rem;color:var(--on-surface-muted)">Demo: any credentials will work</p>
       </div>
     </div>
   `;
-    }
-
-    function doLogin() {
-      isLoggedIn = true;
-      navigate('/dashboard');
     }
 
     function handleGlobalSearch(q) {
@@ -1757,8 +2132,138 @@
     // ── LOGIN ───────────────────────────────────────────────────────
     route('/login', () => { renderLoginPage(); });
 
+    // ── CANDIDATE PORTAL ────────────────────────────────────────────
+    function applyToJob(jobId) {
+      openScreenModal();
+      setTimeout(() => {
+        const sel = document.getElementById('screenJobSelect');
+        if (sel && jobId) sel.value = jobId;
+        if (currentUser && currentUser.name) {
+          const nameInput = document.getElementById('screenCandidateName');
+          if (nameInput) nameInput.value = currentUser.name;
+        }
+      }, 80);
+    }
+
+    route('/candidate-portal', async () => {
+      renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading candidate portal...</p></div>');
+      const [jobsData, appsData] = await Promise.all([
+        api('/api/jobs?status=open').catch(() => ({ jobs: [] })),
+        api('/api/applications').catch(() => ({ applications: [] }))
+      ]);
+
+      const jobs = jobsData.jobs || [];
+      const apps = appsData.applications || [];
+      const avgScore = apps.length ? (apps.reduce((acc, a) => acc + (a.ats_score || 0), 0) / apps.length).toFixed(1) : '—';
+      const topScore = apps.length ? Math.max(...apps.map(a => a.ats_score || 0)).toFixed(0) : '—';
+
+      const appRows = apps.length ? apps.map(a => `
+        <tr onclick="navigate('/screening/${esc(a.id)}')">
+          <td><div class="text-label">${esc(a.job_title)}</div><div class="text-code text-faint">${esc(a.department || '')}</div></td>
+          <td>${formatDate(a.applied_at)}</td>
+          <td>${scoreBadge(a.ats_score)}</td>
+          <td>${statusBadge(a.status)}</td>
+          <td style="text-align:right">
+            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();navigate('/screening/${esc(a.id)}')">
+              View AI Feedback
+            </button>
+          </td>
+        </tr>
+      `).join('') : `
+        <tr><td colspan="5" class="text-muted" style="text-align:center;padding:32px">
+          You haven't submitted any job applications yet. Choose an open position below to apply!
+        </td></tr>
+      `;
+
+      const jobCards = jobs.length ? jobs.map(j => `
+        <div class="card" style="padding:16px;display:flex;flex-direction:column;justify-content:space-between;gap:12px">
+          <div>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+              <h3 style="font-size:0.9375rem;font-weight:600;color:var(--on-surface)">${esc(j.title)}</h3>
+              <span class="badge badge-pill badge-neutral">${esc(j.employment_type || 'Full-time')}</span>
+            </div>
+            <div class="text-code text-faint mt-1">${esc(j.department)} · ${esc(j.location || 'Remote')}</div>
+            <p class="text-body-sm text-muted mt-2" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(j.description || j.requirements || '')}</p>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:12px;border-top:1px solid var(--border)">
+            <span class="text-faint" style="font-size:0.75rem">Posted ${formatDate(j.created_at)}</span>
+            <button class="btn btn-primary btn-sm" onclick="applyToJob('${esc(j.id)}')">
+              <span class="material-symbols-outlined" style="font-size:15px">send</span>Apply Now
+            </button>
+          </div>
+        </div>
+      `).join('') : '<div class="text-faint">No open jobs found at this time.</div>';
+
+      document.getElementById('pageContent').innerHTML = `
+        <div class="page-header">
+          <div class="page-header-left">
+            <h1 class="page-title">Candidate Career Portal</h1>
+            <p class="page-subtitle">Welcome, ${esc(currentUser?.name || 'Applicant')} · Track your applications & AI match scores</p>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-accent" onclick="openScreenModal()">
+              <span class="material-symbols-outlined">upload_file</span>Upload Resume to Test Match
+            </button>
+          </div>
+        </div>
+
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-top"><span class="kpi-label">My Applications</span><span class="material-symbols-outlined kpi-icon">description</span></div>
+            <div class="kpi-value">${apps.length}</div>
+            <div class="kpi-trend"><span class="text-faint">active submissions</span></div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-top"><span class="kpi-label">Top ATS Match</span><span class="material-symbols-outlined kpi-icon">verified</span></div>
+            <div class="kpi-value">${topScore}${topScore !== '—' ? '%' : ''}</div>
+            <div class="kpi-trend"><span class="text-faint">best score</span></div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-top"><span class="kpi-label">Average Score</span><span class="material-symbols-outlined kpi-icon">analytics</span></div>
+            <div class="kpi-value">${avgScore}${avgScore !== '—' ? '%' : ''}</div>
+            <div class="kpi-trend"><span class="text-faint">across submissions</span></div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-top"><span class="kpi-label">Available Openings</span><span class="material-symbols-outlined kpi-icon">work_outline</span></div>
+            <div class="kpi-value">${jobs.length}</div>
+            <div class="kpi-trend"><span class="text-faint">open roles</span></div>
+          </div>
+        </div>
+
+        <div class="card mt-4">
+          <div class="card-header">
+            <span class="card-title">My Application History</span>
+            <span class="badge badge-neutral">${apps.length} records</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Position</th><th>Applied Date</th><th>ATS Score</th><th>Status</th><th style="text-align:right">Action</th></tr></thead>
+              <tbody>${appRows}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="mt-4">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <div>
+              <h2 style="font-size:1.125rem;font-weight:600;color:var(--on-surface)">Featured Job Openings</h2>
+              <p class="text-faint" style="font-size:0.8125rem">Apply directly with your resume to receive instantaneous AI screening feedback</p>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="navigate('/jobs')">View All Jobs</button>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));gap:16px">
+            ${jobCards}
+          </div>
+        </div>
+      `;
+    });
+
     // ── DASHBOARD ───────────────────────────────────────────────────
     route('/dashboard', async () => {
+      if (currentUser?.role === 'candidate') {
+        navigate('/candidate-portal');
+        return;
+      }
       renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading dashboard...</p></div>');
       const [stats, recent] = await Promise.all([api('/api/dashboard/stats'), api('/api/dashboard/recent')]);
       const apps = recent.applications || [];
@@ -1791,15 +2296,18 @@
     </tr>
   `).join('') : '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:32px">No applications yet. Screen a candidate to get started.</td></tr>';
 
+      const firstName = (currentUser?.name || 'Partner').split(' ')[0];
+      const canCreate = currentUser?.role === 'admin' || currentUser?.role === 'recruiter';
+
       document.getElementById('pageContent').innerHTML = `
     <div class="page-header">
       <div class="page-header-left">
         <h1 class="page-title">Dashboard</h1>
-        <p class="page-subtitle">Good ${new Date().getHours() < 12 ? 'morning' : 'afternoon'}, ${esc(currentUser.name.split(' ')[0])} · Overview of hiring activity</p>
+        <p class="page-subtitle">Good ${new Date().getHours() < 12 ? 'morning' : 'afternoon'}, ${esc(firstName)} · Overview of hiring activity</p>
       </div>
       <div class="page-actions">
         <button class="btn btn-secondary" onclick="navigate('/jobs')"><span class="material-symbols-outlined">work_outline</span>View Jobs</button>
-        <button class="btn btn-primary" onclick="openCreateJobModal()"><span class="material-symbols-outlined">add</span>Create Job</button>
+        ${canCreate ? `<button class="btn btn-primary" onclick="openCreateJobModal()"><span class="material-symbols-outlined">add</span>Create Job</button>` : ''}
       </div>
     </div>
     <div class="kpi-grid">
@@ -1813,9 +2321,9 @@
       <div class="card"><div class="card-header"><span class="card-title">Hiring Pipeline</span><span class="badge badge-neutral">${stats.total_applications} leads</span></div><div class="card-body" style="display:flex;flex-direction:column;gap:12px">${pipelineHtml || '<div class="text-faint">No data</div>'}</div></div>
       <div class="card"><div class="card-header"><span class="card-title">Quick Actions</span></div><div class="card-body" style="display:flex;flex-direction:column;gap:8px">
         <button class="btn btn-accent w-full" style="justify-content:center" onclick="openScreenModal()"><span class="material-symbols-outlined">fact_check</span>Screen a Resume</button>
-        <button class="btn btn-secondary w-full" style="justify-content:center" onclick="openCreateJobModal()"><span class="material-symbols-outlined">add</span>Create New Job</button>
+        ${canCreate ? `<button class="btn btn-secondary w-full" style="justify-content:center" onclick="openCreateJobModal()"><span class="material-symbols-outlined">add</span>Create New Job</button>` : ''}
         <button class="btn btn-secondary w-full" style="justify-content:center" onclick="navigate('/candidates')"><span class="material-symbols-outlined">group</span>View Candidates</button>
-        <button class="btn btn-secondary w-full" style="justify-content:center" onclick="navigate('/analytics')"><span class="material-symbols-outlined">analytics</span>View Analytics</button>
+        ${currentUser?.role !== 'hiring_manager' ? `<button class="btn btn-secondary w-full" style="justify-content:center" onclick="navigate('/analytics')"><span class="material-symbols-outlined">analytics</span>View Analytics</button>` : ''}
       </div></div>
     </div>
     <div class="card mt-4">
@@ -1830,6 +2338,9 @@
       renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading jobs...</p></div>');
       const data = await api('/api/jobs');
       const jobs = data.jobs || [];
+      const isCand = currentUser?.role === 'candidate';
+      const canCreate = currentUser?.role === 'admin' || currentUser?.role === 'recruiter';
+
       const rows = jobs.length ? jobs.map(j => `
     <tr onclick="navigate('/jobs/${esc(j.id)}')">
       <td><div class="text-label">${esc(j.title)}</div></td>
@@ -1838,16 +2349,30 @@
       <td>${esc(j.employment_type)}</td>
       <td>${statusBadge(j.status)}</td>
       <td style="text-align:center">${j.application_count || 0}</td>
-      <td>${formatDate(j.created_at)}</td>
+      <td style="text-align:right">
+        ${isCand ? `
+          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();applyToJob('${esc(j.id)}')">
+            <span class="material-symbols-outlined" style="font-size:14px">send</span>Apply
+          </button>
+        ` : `
+          <span class="text-faint">${formatDate(j.created_at)}</span>
+        `}
+      </td>
     </tr>
-  `).join('') : '<tr><td colspan="7"><div class="empty-state"><span class="material-symbols-outlined">work_outline</span><div class="empty-state-title">No jobs yet</div><div class="empty-state-text">Create your first job requisition to start receiving applications.</div><button class="btn btn-primary" onclick="openCreateJobModal()"><span class="material-symbols-outlined">add</span>Create Job</button></div></td></tr>';
+  `).join('') : '<tr><td colspan="7"><div class="empty-state"><span class="material-symbols-outlined">work_outline</span><div class="empty-state-title">No jobs available</div><div class="empty-state-text">Check back soon for new opportunities.</div></div></td></tr>';
 
       document.getElementById('pageContent').innerHTML = `
     <div class="page-header">
-      <div class="page-header-left"><h1 class="page-title">Jobs</h1><p class="page-subtitle">${jobs.length} job requisitions</p></div>
-      <div class="page-actions"><button class="btn btn-primary" onclick="openCreateJobModal()"><span class="material-symbols-outlined">add</span>Create Job</button></div>
+      <div class="page-header-left">
+        <h1 class="page-title">${isCand ? 'Available Opportunities' : 'Job Requisitions'}</h1>
+        <p class="page-subtitle">${jobs.length} open positions</p>
+      </div>
+      <div class="page-actions">
+        ${canCreate ? `<button class="btn btn-primary" onclick="openCreateJobModal()"><span class="material-symbols-outlined">add</span>Create Job</button>` : ''}
+        ${isCand ? `<button class="btn btn-accent" onclick="openScreenModal()"><span class="material-symbols-outlined">upload_file</span>Upload Resume</button>` : ''}
+      </div>
     </div>
-    <div class="card"><div class="table-wrap"><table><thead><tr><th>Title</th><th>Department</th><th>Location</th><th>Type</th><th>Status</th><th style="text-align:center">Apps</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+    <div class="card"><div class="table-wrap"><table><thead><tr><th>Title</th><th>Department</th><th>Location</th><th>Type</th><th>Status</th><th style="text-align:center">Applicants</th><th style="text-align:right">Action</th></tr></thead><tbody>${rows}</tbody></table></div></div>
   `;
     });
 
@@ -2101,16 +2626,24 @@
 
       const statusOptions = ['applied', 'screening', 'shortlisted', 'interview', 'hired', 'rejected'].map(s => `<option value="${s}" ${a.status === s ? 'selected' : ''}>${s}</option>`).join('');
 
+      const isStaff = currentUser && currentUser.role !== 'candidate';
       document.getElementById('pageContent').innerHTML = `
     <div class="page-header">
       <div class="page-header-left">
-        <a href="#/screening" class="text-faint" style="text-decoration:none;font-size:0.75rem">← Screening Reports</a>
+        <a href="${isStaff ? '#/screening' : '#/candidate-portal'}" class="text-faint" style="text-decoration:none;font-size:0.75rem">← ${isStaff ? 'Screening Reports' : 'My Candidate Portal'}</a>
         <h1 class="page-title mt-2">Screening Report</h1>
         <p class="page-subtitle">${esc(a.candidate_name)} · ${esc(a.job_title)}</p>
       </div>
       <div class="page-actions">
-        <select class="form-select" style="width:auto;height:32px" onchange="updateStatus('${esc(a.id)}',this.value)">${statusOptions}</select>
-        <button class="btn btn-secondary" onclick="navigate('/candidates/${esc(a.candidate_id)}')"><span class="material-symbols-outlined">person</span>View Profile</button>
+        ${isStaff ? `
+          <select class="form-select" style="width:auto;height:32px" onchange="updateStatus('${esc(a.id)}',this.value)">${statusOptions}</select>
+          <button class="btn btn-secondary" onclick="navigate('/candidates/${esc(a.candidate_id)}')"><span class="material-symbols-outlined">person</span>View Profile</button>
+        ` : `
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="text-faint" style="font-size:0.8125rem">Application Status:</span>
+            ${statusBadge(a.status)}
+          </div>
+        `}
       </div>
     </div>
 

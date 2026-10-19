@@ -17,8 +17,10 @@ FIX LOG
 7. Input validation tightened: empty filename, wrong extension handled gracefully.
 """
 
-import os, re, io, logging, json, sqlite3, uuid
-from datetime import datetime, timezone
+import os, re, io, logging, json, sqlite3, uuid, pickle, secrets
+from datetime import datetime, timezone, timedelta
+from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash
 import numpy as np
 from flask import Flask, request, jsonify, send_from_directory, g
 from flask_cors import CORS
@@ -85,12 +87,14 @@ import tensorflow as tf
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 # ── paths ────────────────────────────────────────────────────────────────────
-BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
-FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "Front end")
-MODEL_PATH   = os.path.join(BASE_DIR, "resume_ann_model.keras")
-INPUT_DIM    = 5000
-DB_PATH      = os.path.join(BASE_DIR, "aihire.db")
-UPLOADS_DIR  = os.path.join(BASE_DIR, "uploads")
+BASE_DIR           = os.path.dirname(os.path.abspath(__file__))
+FRONTEND_DIR       = os.path.join(os.path.dirname(BASE_DIR), "Front end")
+MODEL_PATH         = os.path.join(BASE_DIR, "resume_ann_model.keras")
+TFIDF_PATH         = os.path.join(BASE_DIR, "tfidf_vectorizer.pkl")
+LABEL_ENCODER_PATH = os.path.join(BASE_DIR, "label_encoder.pkl")
+INPUT_DIM          = 5000
+DB_PATH            = os.path.join(BASE_DIR, "aihire.db")
+UPLOADS_DIR        = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 # ── categories ───────────────────────────────────────────────────────────────
@@ -103,6 +107,16 @@ JOB_CATEGORIES = [
     "PMO","Python Developer","SAP Developer","Sales",
     "Testing","Web Designing",
 ]
+
+# Dynamically sync categories if label_encoder.pkl exists
+try:
+    if os.path.exists(LABEL_ENCODER_PATH):
+        with open(LABEL_ENCODER_PATH, "rb") as _le_f:
+            _le = pickle.load(_le_f)
+            if hasattr(_le, "classes_"):
+                JOB_CATEGORIES = [str(c) for c in _le.classes_]
+except Exception as _e:
+    pass
 
 DOMAIN_KEYWORDS = {
     "Data Science": [
@@ -266,8 +280,24 @@ def get_model():
         _model = None
     return _model
 
-# ── FIX 2: stable TF-IDF corpus ───────────────────────────────────────────────
-# Build the background corpus ONCE so the vocabulary is identical every call.
+# ── FIX 2: pre-trained TF-IDF vectorizer with fallback ─────────────────────────
+_tfidf = None
+
+def get_tfidf():
+    global _tfidf
+    if _tfidf is not None:
+        return _tfidf
+    if os.path.exists(TFIDF_PATH):
+        try:
+            with open(TFIDF_PATH, "rb") as f:
+                _tfidf = pickle.load(f)
+                logger.info("Loaded pre-trained TF-IDF vectorizer (vocab=%d)", len(_tfidf.vocabulary_))
+        except Exception as exc:
+            logger.warning("Failed to load pre-trained TF-IDF: %s", exc)
+            _tfidf = None
+    return _tfidf
+
+# Build background corpus fallback if vectorizer is not found on disk
 _DOMAIN_CORPUS = " ".join(
     tok for kws in DOMAIN_KEYWORDS.values() for tok in kws
 )
@@ -275,7 +305,20 @@ _FILLER = " ".join(f"token{i}" for i in range(5000))
 _BG_CORPUS = [_DOMAIN_CORPUS, _FILLER]   # first slot reserved for the user text
 
 def text_to_tfidf_vector(text: str, dim: int = 5000) -> np.ndarray:
-    """Convert text to a fixed dim-dimensional TF-IDF vector."""
+    """Convert text to a fixed dim-dimensional TF-IDF vector using trained TF-IDF when available."""
+    tfidf = get_tfidf()
+    if tfidf is not None:
+        try:
+            vec = tfidf.transform([text]).toarray().astype(np.float32)
+            if vec.shape[1] == dim:
+                return vec
+            elif vec.shape[1] < dim:
+                return np.hstack([vec, np.zeros((1, dim - vec.shape[1]), dtype=np.float32)])
+            else:
+                return vec[:, :dim]
+        except Exception as err:
+            logger.warning("Trained TF-IDF transform failed, falling back: %s", err)
+
     corpus = [text] + _BG_CORPUS          # user text always at index 0
     vec    = TfidfVectorizer(max_features=dim, stop_words="english")
     matrix = vec.fit_transform(corpus)    # shape: (3, ≤dim)
@@ -586,7 +629,7 @@ def close_db(exc):
         db.close()
 
 def init_db():
-    """Create tables if they don't exist and seed initial data."""
+    """Create tables if they don't exist, apply schema migrations, and seed initial accounts."""
     db = sqlite3.connect(DB_PATH)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA foreign_keys=ON")
@@ -596,8 +639,16 @@ def init_db():
             name TEXT NOT NULL,
             email TEXT UNIQUE NOT NULL,
             role TEXT DEFAULT 'recruiter',
+            password_hash TEXT,
             avatar_url TEXT,
             created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         CREATE TABLE IF NOT EXISTS jobs (
             id TEXT PRIMARY KEY,
@@ -645,12 +696,41 @@ def init_db():
         );
     """)
 
-    # Seed default user if empty
-    cur = db.execute("SELECT COUNT(*) FROM users")
-    if cur.fetchone()[0] == 0:
+    # Backward-compatible migration: add password_hash if not present
+    user_cols = [c[1] for c in db.execute("PRAGMA table_info(users)").fetchall()]
+    if "password_hash" not in user_cols:
+        db.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+
+    # Seed or upgrade default demo accounts for all 4 roles
+    default_users = [
+        ("u_admin", "Alexander Vance", "admin@aihire.io", "admin", "Admin@123"),
+        ("u1", "Eleanor Vance", "eleanor@aihire.io", "recruiter", "Recruiter@123"),
+        ("u_manager", "Marcus Thorne", "manager@aihire.io", "hiring_manager", "Manager@123"),
+        ("u_candidate", "Sophia Chen", "candidate@aihire.io", "candidate", "Candidate@123")
+    ]
+    for uid, name, email, role, pwd in default_users:
+        existing = db.execute("SELECT id, password_hash FROM users WHERE email = ?", (email,)).fetchone()
+        hashed = generate_password_hash(pwd)
+        if not existing:
+            db.execute(
+                "INSERT INTO users (id, name, email, role, password_hash) VALUES (?, ?, ?, ?, ?)",
+                (uid, name, email, role, hashed)
+            )
+        elif not existing[1]:
+            db.execute(
+                "UPDATE users SET password_hash = ?, role = ? WHERE id = ?",
+                (hashed, role, existing[0])
+            )
+
+    # Ensure a candidate profile exists for candidate@aihire.io
+    cand = db.execute("SELECT id FROM candidates WHERE email = ?", ("candidate@aihire.io",)).fetchone()
+    if not cand:
         db.execute(
-            "INSERT INTO users (id, name, email, role) VALUES (?, ?, ?, ?)",
-            ("u1", "Eleanor Vance", "eleanor@aihire.io", "Sr. Talent Partner")
+            """INSERT INTO candidates (id, name, email, current_role, experience_years, skills, education)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("c_demo", "Sophia Chen", "candidate@aihire.io", "Full Stack Software Engineer", 4,
+             json.dumps(["Python", "JavaScript", "React", "Flask", "SQL", "Docker", "Git"]),
+             json.dumps(["B.S. in Computer Science"]))
         )
 
     # Seed sample jobs if empty
@@ -699,8 +779,191 @@ def row_to_dict(row):
     return d
 
 
+# ── Session & Auth Helpers ───────────────────────────────────────────────────
+def create_session(user_id: str, duration_days: int = 7) -> str:
+    db = get_db()
+    token = secrets.token_hex(32)
+    now = datetime.now(timezone.utc)
+    expires = (now + timedelta(days=duration_days)).isoformat()
+    db.execute(
+        "INSERT INTO user_sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (token, user_id, now.isoformat(), expires)
+    )
+    db.commit()
+    return token
+
+def get_user_from_token(token: str):
+    if not token:
+        return None
+    db = get_db()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    row = db.execute("""
+        SELECT u.* FROM users u
+        JOIN user_sessions s ON u.id = s.user_id
+        WHERE s.token = ? AND s.expires_at > ?
+    """, (token, now_iso)).fetchone()
+    if row:
+        return dict(row)
+    return None
+
+def revoke_session(token: str):
+    if not token:
+        return
+    db = get_db()
+    db.execute("DELETE FROM user_sessions WHERE token = ?", (token,))
+    db.commit()
+
+def get_current_user():
+    auth_header = request.headers.get("Authorization", "")
+    token = None
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+    elif "aihire_token" in request.cookies:
+        token = request.cookies.get("aihire_token")
+    if not token:
+        return None
+    return get_user_from_token(token)
+
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        user = get_current_user()
+        if not user:
+            return jsonify({"error": "Authentication required. Please sign in."}), 401
+        g.current_user = user
+        return f(*args, **kwargs)
+    return decorated
+
+def require_roles(*roles):
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            user = get_current_user()
+            if not user:
+                return jsonify({"error": "Authentication required. Please sign in."}), 401
+            g.current_user = user
+            role = (user.get("role") or "").lower()
+            allowed = [r.lower() for r in roles]
+            is_recruiter = role in ("recruiter", "sr. talent partner", "talent partner")
+            has_role = role in allowed or (is_recruiter and "recruiter" in allowed)
+            # Admin has full privileges
+            if not has_role and role != "admin":
+                return jsonify({"error": f"Forbidden: Insufficient privileges. Required: {', '.join(roles)}"}), 403
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
+
+
+# ── Authentication Endpoints ──────────────────────────────────────────────────
+@app.route("/api/auth/register", methods=["POST"])
+def auth_register():
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+    requested_role = (data.get("role") or "candidate").strip().lower()
+
+    if not name:
+        return jsonify({"error": "Full name is required."}), 400
+    if not email or "@" not in email or "." not in email:
+        return jsonify({"error": "A valid email address is required."}), 400
+    if len(password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters long."}), 400
+
+    # Public registration only creates candidates.
+    # Creating admin/recruiter/hiring_manager requires existing admin auth.
+    current = get_current_user()
+    if current and current.get("role") == "admin":
+        role = requested_role if requested_role in ("admin", "recruiter", "hiring_manager", "candidate") else "candidate"
+    else:
+        role = "candidate"
+
+    db = get_db()
+    existing = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+    if existing:
+        return jsonify({"error": "An account with this email address already exists."}), 409
+
+    uid = "u_" + uuid.uuid4().hex[:8]
+    hashed = generate_password_hash(password)
+    now = datetime.now(timezone.utc).isoformat()
+
+    db.execute(
+        "INSERT INTO users (id, name, email, role, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (uid, name, email, role, hashed, now)
+    )
+
+    if role == "candidate":
+        cand = db.execute("SELECT id FROM candidates WHERE email = ?", (email,)).fetchone()
+        if not cand:
+            cid = "c_" + uuid.uuid4().hex[:8]
+            db.execute(
+                "INSERT INTO candidates (id, name, email, current_role, experience_years, skills, education, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (cid, name, email, data.get("current_role", ""), int(data.get("experience_years") or 0), "[]", "[]", now)
+            )
+
+    db.commit()
+    token = create_session(uid)
+    return jsonify({
+        "success": True,
+        "token": token,
+        "user": {
+            "id": uid,
+            "name": name,
+            "email": email,
+            "role": role
+        }
+    }), 201
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    data = request.get_json(force=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+
+    if not email or not password:
+        return jsonify({"error": "Email and password are required."}), 400
+
+    db = get_db()
+    user = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    if not user:
+        return jsonify({"error": "Invalid email or password."}), 401
+
+    user_dict = dict(user)
+    stored_hash = user_dict.get("password_hash")
+    if not stored_hash or not check_password_hash(stored_hash, password):
+        return jsonify({"error": "Invalid email or password."}), 401
+
+    token = create_session(user_dict["id"])
+    return jsonify({
+        "success": True,
+        "token": token,
+        "user": {
+            "id": user_dict["id"],
+            "name": user_dict["name"],
+            "email": user_dict["email"],
+            "role": user_dict["role"]
+        }
+    })
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else request.cookies.get("aihire_token")
+    if token:
+        revoke_session(token)
+    return jsonify({"success": True, "message": "Logged out successfully."})
+
+@app.route("/api/auth/me", methods=["GET"])
+@require_auth
+def auth_me():
+    user = dict(g.current_user)
+    user.pop("password_hash", None)
+    return jsonify({"user": user})
+
+
 # ── Dashboard endpoints ───────────────────────────────────────────────────────
 @app.route("/api/dashboard/stats", methods=["GET"])
+@require_roles("admin", "recruiter", "hiring_manager")
 def dashboard_stats():
     db = get_db()
     stats = {
@@ -727,6 +990,7 @@ def dashboard_stats():
 
 
 @app.route("/api/dashboard/recent", methods=["GET"])
+@require_roles("admin", "recruiter", "hiring_manager")
 def dashboard_recent():
     db = get_db()
     rows = db.execute("""
@@ -742,36 +1006,40 @@ def dashboard_recent():
 
 
 # ── Jobs CRUD ─────────────────────────────────────────────────────────────────
-# @app.route("/api/jobs", methods=["GET"])
-# def list_jobs():
-#     db = get_db()
-#     status = request.args.get("status")
-#     search = request.args.get("search", "")
-#     query = "SELECT * FROM jobs"
-#     params = []
-#     conditions = []
-#     if status:
-#         conditions.append("status = ?")
-#         params.append(status)
-#     if search:
-#         conditions.append("(title LIKE ? OR department LIKE ? OR location LIKE ?)")
-#         params.extend([f"%{search}%"] * 3)
-#     if conditions:
-#         query += " WHERE " + " AND ".join(conditions)
-#     query += " ORDER BY created_at DESC"
-#     rows = db.execute(query, params).fetchall()
-#     # Add application count for each job
-#     result = []
-#     for r in rows:
-#         d = dict(r)
-#         d["application_count"] = db.execute(
-#             "SELECT COUNT(*) FROM applications WHERE job_id = ?", (d["id"],)
-#         ).fetchone()[0]
-#         result.append(d)
-#     return jsonify({"jobs": result})
+@app.route("/api/jobs", methods=["GET"])
+def list_jobs():
+    db = get_db()
+    status = request.args.get("status")
+    search = request.args.get("search", "")
+    department = request.args.get("department", "")
+    query = "SELECT * FROM jobs"
+    params = []
+    conditions = []
+    if status:
+        conditions.append("status = ?")
+        params.append(status)
+    if department:
+        conditions.append("department = ?")
+        params.append(department)
+    if search:
+        conditions.append("(title LIKE ? OR department LIKE ? OR location LIKE ?)")
+        params.extend([f"%{search}%"] * 3)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY created_at DESC"
+    rows = db.execute(query, params).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["application_count"] = db.execute(
+            "SELECT COUNT(*) FROM applications WHERE job_id = ?", (d["id"],)
+        ).fetchone()[0]
+        result.append(d)
+    return jsonify({"jobs": result})
 
 
 @app.route("/api/jobs", methods=["POST"])
+@require_roles("admin", "recruiter")
 def create_job():
     data = request.get_json(force=True)
     if not data.get("title"):
@@ -792,28 +1060,28 @@ def create_job():
     return jsonify(job), 201
 
 
-# @app.route("/api/jobs/<job_id>", methods=["GET"])
-# def get_job(job_id):
-#     db = get_db()
-#     job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-#     if not job:
-#         return jsonify({"error": "Job not found"}), 404
-#     d = dict(job)
-#     d["application_count"] = db.execute(
-#         "SELECT COUNT(*) FROM applications WHERE job_id = ?", (job_id,)
-#     ).fetchone()[0]
-#     # Recent applications for this job
-#     apps = db.execute("""
-#         SELECT a.*, c.name as candidate_name, c.email as candidate_email,
-#                c.current_role, c.experience_years
-#         FROM applications a JOIN candidates c ON a.candidate_id = c.id
-#         WHERE a.job_id = ? ORDER BY a.ats_score DESC
-#     """, (job_id,)).fetchall()
-#     d["applications"] = [row_to_dict(a) for a in apps]
-#     return jsonify(d)
+@app.route("/api/jobs/<job_id>", methods=["GET"])
+def get_job(job_id):
+    db = get_db()
+    job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    d = dict(job)
+    d["application_count"] = db.execute(
+        "SELECT COUNT(*) FROM applications WHERE job_id = ?", (job_id,)
+    ).fetchone()[0]
+    apps = db.execute("""
+        SELECT a.*, c.name as candidate_name, c.email as candidate_email,
+               c.current_role, c.experience_years
+        FROM applications a JOIN candidates c ON a.candidate_id = c.id
+        WHERE a.job_id = ? ORDER BY a.ats_score DESC
+    """, (job_id,)).fetchall()
+    d["applications"] = [row_to_dict(a) for a in apps]
+    return jsonify(d)
 
 
 @app.route("/api/jobs/<job_id>", methods=["PUT"])
+@require_roles("admin", "recruiter")
 def update_job(job_id):
     db = get_db()
     existing = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -841,6 +1109,7 @@ def update_job(job_id):
 
 
 @app.route("/api/jobs/<job_id>", methods=["DELETE"])
+@require_roles("admin")
 def delete_job(job_id):
     db = get_db()
     db.execute("DELETE FROM applications WHERE job_id = ?", (job_id,))
@@ -851,6 +1120,7 @@ def delete_job(job_id):
 
 # ── Candidates ────────────────────────────────────────────────────────────────
 @app.route("/api/candidates", methods=["GET"])
+@require_roles("admin", "recruiter", "hiring_manager")
 def list_candidates():
     db = get_db()
     search = request.args.get("search", "")
@@ -864,7 +1134,6 @@ def list_candidates():
     result = []
     for r in rows:
         d = row_to_dict(r)
-        # Get latest application info
         latest = db.execute("""
             SELECT a.ats_score, a.status, a.predicted_category, j.title as job_title
             FROM applications a JOIN jobs j ON a.job_id = j.id
@@ -880,12 +1149,18 @@ def list_candidates():
 
 
 @app.route("/api/candidates/<cid>", methods=["GET"])
+@require_auth
 def get_candidate(cid):
     db = get_db()
     c = db.execute("SELECT * FROM candidates WHERE id = ?", (cid,)).fetchone()
     if not c:
         return jsonify({"error": "Candidate not found"}), 404
     d = row_to_dict(c)
+    # Role isolation: candidates can only view their own candidate profile
+    user_role = (g.current_user.get("role") or "").lower()
+    if user_role == "candidate" and d.get("email") != g.current_user.get("email"):
+        return jsonify({"error": "Forbidden: Cannot access other candidate profiles."}), 403
+
     apps = db.execute("""
         SELECT a.*, j.title as job_title, j.department
         FROM applications a JOIN jobs j ON a.job_id = j.id
@@ -897,10 +1172,13 @@ def get_candidate(cid):
 
 # ── Applications ──────────────────────────────────────────────────────────────
 @app.route("/api/applications", methods=["GET"])
+@require_auth
 def list_applications():
     db = get_db()
     status = request.args.get("status")
     job_id = request.args.get("job_id")
+    user_role = (g.current_user.get("role") or "").lower()
+
     query = """
         SELECT a.*, c.name as candidate_name, c.email as candidate_email,
                c.current_role, c.experience_years, c.skills as candidate_skills,
@@ -911,6 +1189,12 @@ def list_applications():
     """
     conditions = []
     params = []
+
+    # If candidate, only list their own applications
+    if user_role == "candidate":
+        conditions.append("c.email = ?")
+        params.append(g.current_user.get("email"))
+
     if status:
         conditions.append("a.status = ?")
         params.append(status)
@@ -925,6 +1209,7 @@ def list_applications():
 
 
 @app.route("/api/applications/<app_id>/status", methods=["PUT"])
+@require_roles("admin", "recruiter", "hiring_manager")
 def update_application_status(app_id):
     db = get_db()
     data = request.get_json(force=True)
@@ -939,6 +1224,7 @@ def update_application_status(app_id):
 
 # ── Rankings ──────────────────────────────────────────────────────────────────
 @app.route("/api/jobs/<job_id>/rankings", methods=["GET"])
+@require_roles("admin", "recruiter", "hiring_manager")
 def job_rankings(job_id):
     db = get_db()
     job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -956,7 +1242,6 @@ def job_rankings(job_id):
     for i, r in enumerate(rows, 1):
         d = row_to_dict(r)
         d["rank"] = i
-        # Recommendation based on score
         s = d.get("ats_score", 0)
         if s >= 75:
             d["recommendation"] = "Strong Match"
@@ -970,6 +1255,7 @@ def job_rankings(job_id):
 
 # ── Analytics ─────────────────────────────────────────────────────────────────
 @app.route("/api/analytics", methods=["GET"])
+@require_roles("admin", "recruiter")
 def analytics():
     db = get_db()
     total_apps = db.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
@@ -995,14 +1281,12 @@ def analytics():
         "top_categories": [],
         "jobs_by_department": [],
     }
-    # Top predicted categories
     cats = db.execute("""
         SELECT predicted_category, COUNT(*) as cnt
         FROM applications WHERE predicted_category != ''
         GROUP BY predicted_category ORDER BY cnt DESC LIMIT 10
     """).fetchall()
     data["top_categories"] = [{"category": r[0], "count": r[1]} for r in cats]
-    # Jobs by department
     depts = db.execute("""
         SELECT department, COUNT(*) as cnt FROM jobs
         WHERE department != '' GROUP BY department ORDER BY cnt DESC
@@ -1013,6 +1297,7 @@ def analytics():
 
 # ── Screen endpoint (uses existing AI pipeline) ──────────────────────────────
 @app.route("/api/screen", methods=["POST"])
+@require_roles("admin", "recruiter", "candidate")
 def screen_candidate():
     """
     Screen a candidate's resume against a specific job.
@@ -1062,17 +1347,33 @@ def screen_candidate():
         suggestions = generate_suggestions(analysis, category, domain_missing)
         top3 = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)[:3]
 
-        # Extract candidate name from form or generate placeholder
-        candidate_name = request.form.get("candidate_name", "Candidate")
-        candidate_email = request.form.get("candidate_email", "")
+        # Extract candidate name & email or default to authenticated user
+        user_role = (g.current_user.get("role") or "").lower()
+        if user_role == "candidate":
+            candidate_name = g.current_user.get("name")
+            candidate_email = g.current_user.get("email")
+        else:
+            candidate_name = request.form.get("candidate_name", "Candidate")
+            candidate_email = request.form.get("candidate_email", "")
 
-        # Create or find candidate
-        cid = "c" + uuid.uuid4().hex[:8]
-        db.execute(
-            "INSERT INTO candidates (id, name, email, resume_path, resume_text, created_at) VALUES (?,?,?,?,?,?)",
-            (cid, candidate_name, candidate_email, resume_path, resume_text[:5000],
-             datetime.now(timezone.utc).isoformat())
-        )
+        # Find or create candidate
+        cand = None
+        if candidate_email:
+            cand = db.execute("SELECT id FROM candidates WHERE email = ?", (candidate_email,)).fetchone()
+        
+        if cand:
+            cid = cand["id"]
+            db.execute(
+                "UPDATE candidates SET resume_path = ?, resume_text = ? WHERE id = ?",
+                (resume_path, resume_text[:5000], cid)
+            )
+        else:
+            cid = "c" + uuid.uuid4().hex[:8]
+            db.execute(
+                "INSERT INTO candidates (id, name, email, resume_path, resume_text, created_at) VALUES (?,?,?,?,?,?)",
+                (cid, candidate_name, candidate_email, resume_path, resume_text[:5000],
+                 datetime.now(timezone.utc).isoformat())
+            )
 
         # Create application
         aid = "a" + uuid.uuid4().hex[:8]
@@ -1137,6 +1438,7 @@ def screen_candidate():
 
 # ── Single application detail ─────────────────────────────────────────────────
 @app.route("/api/applications/<app_id>", methods=["GET"])
+@require_auth
 def get_application(app_id):
     db = get_db()
     row = db.execute("""
@@ -1151,7 +1453,14 @@ def get_application(app_id):
     """, (app_id,)).fetchone()
     if not row:
         return jsonify({"error": "Application not found"}), 404
-    return jsonify(row_to_dict(row))
+
+    app_data = row_to_dict(row)
+    user_role = (g.current_user.get("role") or "").lower()
+    # Candidate can only see their own application
+    if user_role == "candidate" and app_data.get("candidate_email") != g.current_user.get("email"):
+        return jsonify({"error": "Forbidden: Cannot access other candidate applications."}), 403
+
+    return jsonify(app_data)
 
 
 # ── Initialize database on startup ───────────────────────────────────────────
