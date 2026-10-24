@@ -1702,25 +1702,21 @@
         navigate('/login');
         return;
       }
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
       if (isLoggedIn && window.location.hash === '#/login') {
-        navigate(currentUser?.role === 'candidate' ? '/candidate-portal' : '/dashboard');
+        navigate(isEmp ? '/employee-portal' : '/dashboard');
         return;
       }
 
-      const defaultHash = currentUser?.role === 'candidate' ? '#/candidate-portal' : '#/dashboard';
+      const defaultHash = isEmp ? '#/employee-portal' : '#/dashboard';
       const hash = window.location.hash || defaultHash;
 
-      // Role permission guards
+      // Role permission guards for Employee vs HR
       const userRole = (currentUser?.role || '').toLowerCase();
-      if (userRole === 'candidate') {
-        if (hash === '#/dashboard' || hash.startsWith('#/candidates') || hash === '#/analytics' || hash === '#/settings') {
-          navigate('/candidate-portal');
-          return;
-        }
-      } else if (userRole === 'hiring_manager') {
-        if (hash === '#/analytics' || hash === '#/settings') {
-          toast('Analytics and settings are restricted to Administrators and Recruiters.', 'error');
-          navigate('/dashboard');
+      if (userRole === 'employee' || userRole === 'candidate') {
+        // Employees are strictly restricted to employee-portal, jobs, screening reports (own only)
+        if (hash === '#/dashboard' || hash.startsWith('#/candidates') || hash === '#/analytics' || hash === '#/settings' || hash === '#/applications') {
+          navigate('/employee-portal');
           return;
         }
       }
@@ -1748,27 +1744,19 @@
     // ── Layout ──────────────────────────────────────────────────────
     function renderApp(pageContent) {
       const role = (currentUser?.role || '').toLowerCase();
+      const isEmp = role === 'employee' || role === 'candidate';
       let navItems = '';
       let headerTitle = 'Talent Operations';
 
-      if (role === 'candidate') {
-        headerTitle = 'Candidate Career Portal';
+      if (isEmp) {
+        headerTitle = 'Employee Career Portal';
         navItems = `
-          <a href="#/candidate-portal" data-path="candidate-portal"><span class="material-symbols-outlined">space_dashboard</span>My Portal</a>
+          <a href="#/employee-portal" data-path="employee-portal"><span class="material-symbols-outlined">space_dashboard</span>My Portal</a>
           <a href="#/jobs" data-path="jobs"><span class="material-symbols-outlined">work_outline</span>Explore Jobs</a>
           <a href="#/screening" data-path="screening"><span class="material-symbols-outlined">fact_check</span>My Applications</a>
         `;
-      } else if (role === 'hiring_manager') {
-        headerTitle = 'Hiring Manager Portal';
-        navItems = `
-          <a href="#/dashboard" data-path="dashboard"><span class="material-symbols-outlined">dashboard</span>Overview</a>
-          <a href="#/jobs" data-path="jobs"><span class="material-symbols-outlined">work_outline</span>Department Jobs</a>
-          <a href="#/candidates" data-path="candidates"><span class="material-symbols-outlined">group</span>Candidates</a>
-          <a href="#/applications" data-path="applications"><span class="material-symbols-outlined">description</span>Pipeline</a>
-          <a href="#/screening" data-path="screening"><span class="material-symbols-outlined">fact_check</span>Screening Reports</a>
-        `;
       } else {
-        headerTitle = role === 'admin' ? 'Enterprise Administration' : 'Talent Operations';
+        headerTitle = currentUser?.is_admin ? 'HR Administration' : 'HR Talent Management';
         navItems = `
           <a href="#/dashboard" data-path="dashboard"><span class="material-symbols-outlined">dashboard</span>Dashboard</a>
           <a href="#/jobs" data-path="jobs"><span class="material-symbols-outlined">work_outline</span>Jobs</a>
@@ -1781,7 +1769,7 @@
         `;
       }
 
-      const roleBadgeLabel = role === 'admin' ? 'Administrator' : role === 'hiring_manager' ? 'Hiring Manager' : role === 'candidate' ? 'Job Seeker' : 'Recruiter';
+      const roleBadgeLabel = isEmp ? 'Employee' : (currentUser?.is_admin ? 'HR Administrator' : 'HR Specialist');
 
       document.getElementById('app').innerHTML = `
     <aside class="sidebar" id="sidebar">
@@ -1813,7 +1801,7 @@
         <span class="header-title">${headerTitle}</span>
       </div>
       <div class="header-right">
-        ${role !== 'candidate' ? `
+        ${!isEmp ? `
           <div class="header-search">
             <span class="material-symbols-outlined">search</span>
             <input type="text" placeholder="Search candidates, jobs..." id="globalSearch" onkeydown="if(event.key==='Enter')handleGlobalSearch(this.value)"/>
@@ -1882,8 +1870,8 @@
         localStorage.setItem('aihire_user', JSON.stringify(currentUser));
 
         toast(`Signed in as ${currentUser.name} (${currentUser.role})`);
-        if (currentUser.role === 'candidate') {
-          navigate('/candidate-portal');
+        if (currentUser.role === 'employee' || currentUser.role === 'candidate') {
+          navigate('/employee-portal');
         } else {
           navigate('/dashboard');
         }
@@ -1906,7 +1894,7 @@
       const name = document.getElementById('regName')?.value.trim();
       const email = document.getElementById('regEmail')?.value.trim();
       const password = document.getElementById('regPassword')?.value;
-      const role = document.getElementById('regRole')?.value || 'candidate';
+      const role = document.getElementById('regRole')?.value || 'employee';
 
       if (!name || !email || !password) {
         if (errEl) { errEl.textContent = 'Please fill out all required fields.'; errEl.classList.remove('hidden'); }
@@ -1932,7 +1920,7 @@
         localStorage.setItem('aihire_user', JSON.stringify(currentUser));
 
         toast(`Welcome to AIHire, ${currentUser.name}!`);
-        navigate('/candidate-portal');
+        navigate('/employee-portal');
       } catch (err) {
         if (errEl) {
           errEl.textContent = err.message;
@@ -1941,7 +1929,7 @@
           toast(err.message, 'error');
         }
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = 'Create Candidate Account'; }
+        if (btn) { btn.disabled = false; btn.textContent = 'Create Employee Account'; }
       }
     }
 
@@ -1983,11 +1971,11 @@
         ${authMode === 'login' ? `
           <div class="form-group">
             <label class="form-label">Email Address</label>
-            <input class="form-input" type="email" id="loginEmail" value="eleanor@aihire.io" placeholder="name@company.com" onkeydown="if(event.key==='Enter')doLogin()"/>
+            <input class="form-input" type="email" id="loginEmail" value="hr@aihire.io" placeholder="name@company.com" onkeydown="if(event.key==='Enter')doLogin()"/>
           </div>
           <div class="form-group">
             <label class="form-label">Password</label>
-            <input class="form-input" type="password" id="loginPassword" value="Recruiter@123" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"/>
+            <input class="form-input" type="password" id="loginPassword" value="HR@123" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"/>
           </div>
           <button class="btn btn-primary btn-lg w-full mt-2" id="loginBtn" onclick="doLogin()" style="justify-content:center">Sign In</button>
         ` : `
@@ -2003,28 +1991,20 @@
             <label class="form-label">Password <span class="form-label-sub">Min 6 characters</span></label>
             <input class="form-input" type="password" id="regPassword" placeholder="••••••••" onkeydown="if(event.key==='Enter')doRegister()"/>
           </div>
-          <input type="hidden" id="regRole" value="candidate"/>
-          <button class="btn btn-accent btn-lg w-full mt-2" id="regBtn" onclick="doRegister()" style="justify-content:center">Create Candidate Account</button>
+          <input type="hidden" id="regRole" value="employee"/>
+          <button class="btn btn-accent btn-lg w-full mt-2" id="regBtn" onclick="doRegister()" style="justify-content:center">Create Employee Account</button>
         `}
 
         <div class="demo-role-box">
           <div style="font-size:0.75rem;font-weight:600;color:var(--on-surface-secondary);text-transform:uppercase;letter-spacing:0.04em">Quick Demo Logins</div>
-          <div class="demo-role-grid">
-            <button class="demo-role-btn" type="button" onclick="fillDemo('admin@aihire.io', 'Admin@123')">
-              <strong><span class="chip chip-red" style="font-size:10px;padding:1px 5px">Admin</span> Alexander V.</strong>
-              <span>admin@aihire.io</span>
+          <div class="demo-role-grid" style="grid-template-columns:1fr 1fr">
+            <button class="demo-role-btn" type="button" onclick="fillDemo('hr@aihire.io', 'HR@123')">
+              <strong><span class="chip chip-blue" style="font-size:10px;padding:1px 6px">HR</span> Alexander V.</strong>
+              <span>hr@aihire.io</span>
             </button>
-            <button class="demo-role-btn" type="button" onclick="fillDemo('eleanor@aihire.io', 'Recruiter@123')">
-              <strong><span class="chip chip-blue" style="font-size:10px;padding:1px 5px">Recruiter</span> Eleanor V.</strong>
-              <span>eleanor@aihire.io</span>
-            </button>
-            <button class="demo-role-btn" type="button" onclick="fillDemo('manager@aihire.io', 'Manager@123')">
-              <strong><span class="chip chip-amber" style="font-size:10px;padding:1px 5px">Hiring Mgr</span> Marcus T.</strong>
-              <span>manager@aihire.io</span>
-            </button>
-            <button class="demo-role-btn" type="button" onclick="fillDemo('candidate@aihire.io', 'Candidate@123')">
-              <strong><span class="chip chip-green" style="font-size:10px;padding:1px 5px">Candidate</span> Sophia C.</strong>
-              <span>candidate@aihire.io</span>
+            <button class="demo-role-btn" type="button" onclick="fillDemo('employee@aihire.io', 'Employee@123')">
+              <strong><span class="chip chip-green" style="font-size:10px;padding:1px 6px">Employee</span> Sophia C.</strong>
+              <span>employee@aihire.io</span>
             </button>
           </div>
         </div>
@@ -2045,20 +2025,20 @@
       <div class="modal-overlay" id="screenModal" onclick="if(event.target===this)closeScreenModal()">
         <div class="modal">
           <div class="modal-header">
-            <span class="modal-title">Screen a Candidate</span>
+            <span class="modal-title" id="screenModalTitle">Screen Resume</span>
             <button class="modal-close" onclick="closeScreenModal()">✕</button>
           </div>
           <div class="modal-body">
             <div class="form-group">
-              <label class="form-label">Resume File <span class="form-label-sub">PDF, DOCX, or TXT</span></label>
+              <label class="form-label">Resume File <span class="form-label-sub">PDF, DOCX, or TXT (Max 10MB)</span></label>
               <div class="drop-zone" id="screenDropZone">
                 <input type="file" id="screenResumeFile" accept=".pdf,.docx,.doc,.txt" onchange="showFileName('screenResumeFile','screenFileName')"/>
                 <div class="drop-zone-text"><strong>Click to upload</strong> or drag & drop</div>
                 <div class="file-chosen" id="screenFileName"></div>
               </div>
             </div>
-            <div class="form-group">
-              <label class="form-label">Candidate Name <span class="form-label-sub">optional</span></label>
+            <div class="form-group" id="screenCandidateNameGroup">
+              <label class="form-label">Candidate Name <span class="form-label-sub" id="screenNameSub">optional</span></label>
               <input class="form-input" id="screenCandidateName" placeholder="e.g. Jane Smith"/>
             </div>
             <div class="form-group">
@@ -2074,13 +2054,30 @@
         </div>
       </div>
     `);
-        // Load jobs into select
-        api('/api/jobs').then(data => {
-          const sel = document.getElementById('screenJobSelect');
-          sel.innerHTML = '<option value="">Select a job...</option>' +
-            (data.jobs || []).map(j => `<option value="${esc(j.id)}">${esc(j.title)} — ${esc(j.department)}</option>`).join('');
-        });
       }
+
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
+      const titleEl = document.getElementById('screenModalTitle');
+      if (titleEl) titleEl.textContent = isEmp ? 'Submit Job Application' : 'Screen a Candidate';
+      const nameInput = document.getElementById('screenCandidateName');
+      const nameSub = document.getElementById('screenNameSub');
+      if (nameInput) {
+        nameInput.readOnly = isEmp;
+        nameInput.value = isEmp ? (currentUser?.name || '') : '';
+      }
+      if (nameSub) nameSub.textContent = isEmp ? 'from profile' : 'optional';
+      const btn = document.getElementById('screenSubmitBtn');
+      if (btn) btn.innerHTML = `<span class="material-symbols-outlined">${isEmp ? 'send' : 'fact_check'}</span>${isEmp ? 'Submit Application' : 'Screen Now'}`;
+
+      // Load jobs into select
+      api('/api/jobs?status=open').then(data => {
+        const sel = document.getElementById('screenJobSelect');
+        const curr = sel.value;
+        sel.innerHTML = '<option value="">Select an open position...</option>' +
+          (data.jobs || []).map(j => `<option value="${esc(j.id)}">${esc(j.title)} — ${esc(j.department)}</option>`).join('');
+        if (curr) sel.value = curr;
+      });
+
       document.getElementById('screenModal').classList.add('open');
     }
 
@@ -2099,7 +2096,8 @@
     async function submitScreen() {
       const file = document.getElementById('screenResumeFile').files[0];
       const jobId = document.getElementById('screenJobSelect').value;
-      const name = document.getElementById('screenCandidateName').value.trim() || 'Candidate';
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
+      const name = isEmp ? (currentUser?.name || 'Employee') : (document.getElementById('screenCandidateName').value.trim() || 'Candidate');
       const errEl = document.getElementById('screenError');
       errEl.style.display = 'none';
 
@@ -2107,7 +2105,7 @@
       if (!jobId) { errEl.textContent = 'Please select a target job.'; errEl.style.display = 'block'; return; }
 
       const btn = document.getElementById('screenSubmitBtn');
-      btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+      btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Processing...';
 
       try {
         const fd = new FormData();
@@ -2116,12 +2114,12 @@
         fd.append('candidate_name', name);
         const result = await api('/api/screen', { method: 'POST', body: fd });
         closeScreenModal();
-        toast('Candidate screened successfully');
+        toast(isEmp ? 'Application submitted successfully! Viewing match results.' : 'Candidate screened successfully');
         navigate('/screening/' + result.application_id);
       } catch (e) {
         errEl.textContent = e.message; errEl.style.display = 'block';
       } finally {
-        btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined">fact_check</span>Screen Now';
+        btn.disabled = false; btn.innerHTML = `<span class="material-symbols-outlined">${isEmp ? 'send' : 'fact_check'}</span>${isEmp ? 'Submit Application' : 'Screen Now'}`;
       }
     }
 
@@ -2132,7 +2130,7 @@
     // ── LOGIN ───────────────────────────────────────────────────────
     route('/login', () => { renderLoginPage(); });
 
-    // ── CANDIDATE PORTAL ────────────────────────────────────────────
+    // ── EMPLOYEE PORTAL ─────────────────────────────────────────────
     function applyToJob(jobId) {
       openScreenModal();
       setTimeout(() => {
@@ -2145,17 +2143,115 @@
       }, 80);
     }
 
-    route('/candidate-portal', async () => {
-      renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading candidate portal...</p></div>');
-      const [jobsData, appsData] = await Promise.all([
+    function openEditProfileModal(cand) {
+      let overlay = document.getElementById('profileEditModal');
+      const skillsStr = Array.isArray(cand.skills) ? cand.skills.join(', ') : '';
+      const eduStr = Array.isArray(cand.education) ? cand.education.join(', ') : '';
+
+      if (!overlay) {
+        document.body.insertAdjacentHTML('beforeend', `
+          <div class="modal-overlay" id="profileEditModal" onclick="if(event.target===this)this.classList.remove('open')">
+            <div class="modal">
+              <div class="modal-header">
+                <span class="modal-title">Edit Employee Profile</span>
+                <button class="modal-close" onclick="document.getElementById('profileEditModal').classList.remove('open')">✕</button>
+              </div>
+              <div class="modal-body">
+                <div class="form-group">
+                  <label class="form-label">Full Name</label>
+                  <input class="form-input" id="profileName" value="${esc(cand.name || '')}"/>
+                </div>
+                <div class="grid-2">
+                  <div class="form-group">
+                    <label class="form-label">Current Role / Title</label>
+                    <input class="form-input" id="profileRole" placeholder="e.g. Senior Software Engineer" value="${esc(cand.current_role || '')}"/>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Company</label>
+                    <input class="form-input" id="profileCompany" placeholder="e.g. TechCorp" value="${esc(cand.current_company || '')}"/>
+                  </div>
+                </div>
+                <div class="grid-2">
+                  <div class="form-group">
+                    <label class="form-label">Years of Experience</label>
+                    <input class="form-input" type="number" min="0" max="50" id="profileExp" value="${cand.experience_years || 0}"/>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Phone Number</label>
+                    <input class="form-input" id="profilePhone" placeholder="+1 (555) 012-3456" value="${esc(cand.phone || '')}"/>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Skills <span class="form-label-sub">comma-separated</span></label>
+                  <input class="form-input" id="profileSkills" placeholder="Python, React, SQL, Docker" value="${esc(skillsStr)}"/>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Education <span class="form-label-sub">comma-separated</span></label>
+                  <input class="form-input" id="profileEdu" placeholder="B.S. in Computer Science" value="${esc(eduStr)}"/>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="document.getElementById('profileEditModal').classList.remove('open')">Cancel</button>
+                <button class="btn btn-primary" onclick="submitEditProfile()"><span class="material-symbols-outlined">save</span>Save Profile</button>
+              </div>
+            </div>
+          </div>
+        `);
+      } else {
+        document.getElementById('profileName').value = cand.name || '';
+        document.getElementById('profileRole').value = cand.current_role || '';
+        document.getElementById('profileCompany').value = cand.current_company || '';
+        document.getElementById('profileExp').value = cand.experience_years || 0;
+        document.getElementById('profilePhone').value = cand.phone || '';
+        document.getElementById('profileSkills').value = skillsStr;
+        document.getElementById('profileEdu').value = eduStr;
+      }
+      document.getElementById('profileEditModal').classList.add('open');
+    }
+
+    async function submitEditProfile() {
+      const name = document.getElementById('profileName').value.trim();
+      const current_role = document.getElementById('profileRole').value.trim();
+      const current_company = document.getElementById('profileCompany').value.trim();
+      const experience_years = parseInt(document.getElementById('profileExp').value, 10) || 0;
+      const phone = document.getElementById('profilePhone').value.trim();
+      const skills = document.getElementById('profileSkills').value.split(',').map(s => s.trim()).filter(Boolean);
+      const education = document.getElementById('profileEdu').value.split(',').map(s => s.trim()).filter(Boolean);
+
+      try {
+        const updated = await api('/api/employee/profile', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, current_role, current_company, experience_years, phone, skills, education })
+        });
+        if (currentUser) currentUser.name = name;
+        localStorage.setItem('aihire_user', JSON.stringify(currentUser));
+        document.getElementById('profileEditModal').classList.remove('open');
+        toast('Profile updated successfully');
+        renderEmployeePortal();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    }
+
+    async function renderEmployeePortal() {
+      renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading employee portal...</p></div>');
+      const [jobsData, appsData, profileData] = await Promise.all([
         api('/api/jobs?status=open').catch(() => ({ jobs: [] })),
-        api('/api/applications').catch(() => ({ applications: [] }))
+        api('/api/applications').catch(() => ({ applications: [] })),
+        api('/api/employee/profile').catch(() => ({}))
       ]);
 
       const jobs = jobsData.jobs || [];
       const apps = appsData.applications || [];
+      const prof = profileData || {};
       const avgScore = apps.length ? (apps.reduce((acc, a) => acc + (a.ats_score || 0), 0) / apps.length).toFixed(1) : '—';
       const topScore = apps.length ? Math.max(...apps.map(a => a.ats_score || 0)).toFixed(0) : '—';
+
+      const skills = Array.isArray(prof.skills) ? prof.skills : [];
+      const skillsChips = skills.length ? skills.map(s => `<span class="chip chip-green">${esc(s)}</span>`).join('') : '<span class="text-faint">No skills listed yet</span>';
+
+      window._currentEmployeeProfile = prof;
 
       const appRows = apps.length ? apps.map(a => `
         <tr onclick="navigate('/screening/${esc(a.id)}')">
@@ -2171,7 +2267,7 @@
         </tr>
       `).join('') : `
         <tr><td colspan="5" class="text-muted" style="text-align:center;padding:32px">
-          You haven't submitted any job applications yet. Choose an open position below to apply!
+          You haven't submitted any applications yet. Explore open positions below to apply with your resume!
         </td></tr>
       `;
 
@@ -2197,12 +2293,15 @@
       document.getElementById('pageContent').innerHTML = `
         <div class="page-header">
           <div class="page-header-left">
-            <h1 class="page-title">Candidate Career Portal</h1>
-            <p class="page-subtitle">Welcome, ${esc(currentUser?.name || 'Applicant')} · Track your applications & AI match scores</p>
+            <h1 class="page-title">Employee Career Portal</h1>
+            <p class="page-subtitle">Welcome, ${esc(currentUser?.name || prof.name || 'Employee')} · Manage your profile, applications & ATS match results</p>
           </div>
           <div class="page-actions">
+            <button class="btn btn-secondary" onclick="openEditProfileModal(window._currentEmployeeProfile)">
+              <span class="material-symbols-outlined">person</span>Edit My Profile
+            </button>
             <button class="btn btn-accent" onclick="openScreenModal()">
-              <span class="material-symbols-outlined">upload_file</span>Upload Resume to Test Match
+              <span class="material-symbols-outlined">upload_file</span>Upload Resume / Apply
             </button>
           </div>
         </div>
@@ -2211,12 +2310,12 @@
           <div class="kpi-card">
             <div class="kpi-top"><span class="kpi-label">My Applications</span><span class="material-symbols-outlined kpi-icon">description</span></div>
             <div class="kpi-value">${apps.length}</div>
-            <div class="kpi-trend"><span class="text-faint">active submissions</span></div>
+            <div class="kpi-trend"><span class="text-faint">submitted</span></div>
           </div>
           <div class="kpi-card">
             <div class="kpi-top"><span class="kpi-label">Top ATS Match</span><span class="material-symbols-outlined kpi-icon">verified</span></div>
             <div class="kpi-value">${topScore}${topScore !== '—' ? '%' : ''}</div>
-            <div class="kpi-trend"><span class="text-faint">best score</span></div>
+            <div class="kpi-trend"><span class="text-faint">highest score</span></div>
           </div>
           <div class="kpi-card">
             <div class="kpi-top"><span class="kpi-label">Average Score</span><span class="material-symbols-outlined kpi-icon">analytics</span></div>
@@ -2227,6 +2326,36 @@
             <div class="kpi-top"><span class="kpi-label">Available Openings</span><span class="material-symbols-outlined kpi-icon">work_outline</span></div>
             <div class="kpi-value">${jobs.length}</div>
             <div class="kpi-trend"><span class="text-faint">open roles</span></div>
+          </div>
+        </div>
+
+        <div class="grid-2 mt-4">
+          <div class="card">
+            <div class="card-header" style="justify-content:space-between">
+              <span class="card-title">Professional Profile</span>
+              <button class="btn btn-secondary btn-sm" onclick="openEditProfileModal(window._currentEmployeeProfile)">
+                <span class="material-symbols-outlined" style="font-size:14px">edit</span>Edit
+              </button>
+            </div>
+            <div class="card-body">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+                <div class="sidebar-avatar" style="width:42px;height:42px;font-size:16px">${initials(prof.name || currentUser?.name)}</div>
+                <div>
+                  <div style="font-weight:600;font-size:1rem;color:var(--on-surface)">${esc(prof.name || currentUser?.name || 'Employee')}</div>
+                  <div class="text-faint" style="font-size:0.8125rem">${esc(prof.current_role || 'Employee')}${prof.current_company ? ' at ' + esc(prof.current_company) : ''} · ${prof.experience_years ? prof.experience_years + ' yrs exp' : 'Experience not set'}</div>
+                </div>
+              </div>
+              <div class="text-body-sm text-muted mb-2"><strong>Email:</strong> ${esc(prof.email || currentUser?.email || '—')}</div>
+              <div class="text-body-sm text-muted mb-2"><strong>Phone:</strong> ${esc(prof.phone || 'Not provided')}</div>
+              <div class="text-body-sm text-muted"><strong>Education:</strong> ${Array.isArray(prof.education) && prof.education.length ? esc(prof.education.join(', ')) : 'Not provided'}</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">Key Skills</span></div>
+            <div class="card-body">
+              <div class="keyword-chips mb-3">${skillsChips}</div>
+              <p class="text-faint" style="font-size:0.75rem">Keep your skills updated so the AI match engine can accurately benchmark your competencies against open positions.</p>
+            </div>
           </div>
         </div>
 
@@ -2256,12 +2385,16 @@
           </div>
         </div>
       `;
-    });
+    }
 
-    // ── DASHBOARD ───────────────────────────────────────────────────
+    route('/employee-portal', renderEmployeePortal);
+    route('/candidate-portal', renderEmployeePortal);
+
+    // ── DASHBOARD (HR Only) ──────────────────────────────────────────
     route('/dashboard', async () => {
-      if (currentUser?.role === 'candidate') {
-        navigate('/candidate-portal');
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
+      if (isEmp) {
+        navigate('/employee-portal');
         return;
       }
       renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading dashboard...</p></div>');
@@ -2297,13 +2430,13 @@
   `).join('') : '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:32px">No applications yet. Screen a candidate to get started.</td></tr>';
 
       const firstName = (currentUser?.name || 'Partner').split(' ')[0];
-      const canCreate = currentUser?.role === 'admin' || currentUser?.role === 'recruiter';
+      const canCreate = currentUser?.role === 'hr';
 
       document.getElementById('pageContent').innerHTML = `
     <div class="page-header">
       <div class="page-header-left">
-        <h1 class="page-title">Dashboard</h1>
-        <p class="page-subtitle">Good ${new Date().getHours() < 12 ? 'morning' : 'afternoon'}, ${esc(firstName)} · Overview of hiring activity</p>
+        <h1 class="page-title">HR Management Dashboard</h1>
+        <p class="page-subtitle">Good ${new Date().getHours() < 12 ? 'morning' : 'afternoon'}, ${esc(firstName)} · Overview of recruitment operations</p>
       </div>
       <div class="page-actions">
         <button class="btn btn-secondary" onclick="navigate('/jobs')"><span class="material-symbols-outlined">work_outline</span>View Jobs</button>
@@ -2323,7 +2456,7 @@
         <button class="btn btn-accent w-full" style="justify-content:center" onclick="openScreenModal()"><span class="material-symbols-outlined">fact_check</span>Screen a Resume</button>
         ${canCreate ? `<button class="btn btn-secondary w-full" style="justify-content:center" onclick="openCreateJobModal()"><span class="material-symbols-outlined">add</span>Create New Job</button>` : ''}
         <button class="btn btn-secondary w-full" style="justify-content:center" onclick="navigate('/candidates')"><span class="material-symbols-outlined">group</span>View Candidates</button>
-        ${currentUser?.role !== 'hiring_manager' ? `<button class="btn btn-secondary w-full" style="justify-content:center" onclick="navigate('/analytics')"><span class="material-symbols-outlined">analytics</span>View Analytics</button>` : ''}
+        <button class="btn btn-secondary w-full" style="justify-content:center" onclick="navigate('/analytics')"><span class="material-symbols-outlined">analytics</span>View Analytics</button>
       </div></div>
     </div>
     <div class="card mt-4">
@@ -2338,8 +2471,8 @@
       renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading jobs...</p></div>');
       const data = await api('/api/jobs');
       const jobs = data.jobs || [];
-      const isCand = currentUser?.role === 'candidate';
-      const canCreate = currentUser?.role === 'admin' || currentUser?.role === 'recruiter';
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
+      const canCreate = currentUser?.role === 'hr';
 
       const rows = jobs.length ? jobs.map(j => `
     <tr onclick="navigate('/jobs/${esc(j.id)}')">
@@ -2350,7 +2483,7 @@
       <td>${statusBadge(j.status)}</td>
       <td style="text-align:center">${j.application_count || 0}</td>
       <td style="text-align:right">
-        ${isCand ? `
+        ${isEmp ? `
           <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();applyToJob('${esc(j.id)}')">
             <span class="material-symbols-outlined" style="font-size:14px">send</span>Apply
           </button>
@@ -2364,12 +2497,12 @@
       document.getElementById('pageContent').innerHTML = `
     <div class="page-header">
       <div class="page-header-left">
-        <h1 class="page-title">${isCand ? 'Available Opportunities' : 'Job Requisitions'}</h1>
+        <h1 class="page-title">${isEmp ? 'Available Opportunities' : 'Job Requisitions'}</h1>
         <p class="page-subtitle">${jobs.length} open positions</p>
       </div>
       <div class="page-actions">
         ${canCreate ? `<button class="btn btn-primary" onclick="openCreateJobModal()"><span class="material-symbols-outlined">add</span>Create Job</button>` : ''}
-        ${isCand ? `<button class="btn btn-accent" onclick="openScreenModal()"><span class="material-symbols-outlined">upload_file</span>Upload Resume</button>` : ''}
+        ${isEmp ? `<button class="btn btn-accent" onclick="openScreenModal()"><span class="material-symbols-outlined">upload_file</span>Upload Resume</button>` : ''}
       </div>
     </div>
     <div class="card"><div class="table-wrap"><table><thead><tr><th>Title</th><th>Department</th><th>Location</th><th>Type</th><th>Status</th><th style="text-align:center">Applicants</th><th style="text-align:right">Action</th></tr></thead><tbody>${rows}</tbody></table></div></div>
@@ -2380,6 +2513,7 @@
     route('/jobs/:id', async (id) => {
       renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading job...</p></div>');
       const job = await api(`/api/jobs/${id}`);
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
       const apps = job.applications || [];
       const appRows = apps.length ? apps.map((a, i) => `
     <tr onclick="navigate('/screening/${esc(a.id)}')">
@@ -2398,22 +2532,30 @@
       <div class="page-header-left">
         <div style="display:flex;align-items:center;gap:8px"><a href="#/jobs" class="text-faint" style="text-decoration:none;font-size:0.75rem">← Jobs</a></div>
         <h1 class="page-title mt-2">${esc(job.title)}</h1>
-        <p class="page-subtitle">${esc(job.department)} · ${esc(job.location)} · ${esc(job.employment_type)}</p>
+        <p class="page-subtitle">${esc(job.department)} · ${esc(job.location)} · ${esc(job.employment_type)}${job.salary_range ? ' · ' + esc(job.salary_range) : ''}</p>
       </div>
       <div class="page-actions">
         ${statusBadge(job.status)}
-        <button class="btn btn-accent" onclick="openScreenModal()"><span class="material-symbols-outlined">fact_check</span>Screen Resume</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteJob('${esc(job.id)}')"><span class="material-symbols-outlined">delete</span>Delete</button>
+        ${isEmp ? `
+          <button class="btn btn-primary" onclick="applyToJob('${esc(job.id)}')">
+            <span class="material-symbols-outlined">send</span>Apply for this Position
+          </button>
+        ` : `
+          <button class="btn btn-accent" onclick="openScreenModal()"><span class="material-symbols-outlined">fact_check</span>Screen Resume</button>
+          ${currentUser?.is_admin ? `<button class="btn btn-danger btn-sm" onclick="deleteJob('${esc(job.id)}')"><span class="material-symbols-outlined">delete</span>Delete</button>` : ''}
+        `}
       </div>
     </div>
     <div class="grid-2">
       <div class="card"><div class="card-header"><span class="card-title">Description</span></div><div class="card-body"><p class="text-body text-muted">${esc(job.description) || 'No description provided.'}</p></div></div>
       <div class="card"><div class="card-header"><span class="card-title">Requirements</span></div><div class="card-body"><p class="text-body text-muted">${esc(job.requirements) || 'No requirements specified.'}</p></div></div>
     </div>
-    <div class="card mt-4">
-      <div class="card-header"><span class="card-title">Candidate Rankings</span><span class="badge badge-neutral">${apps.length} candidates</span></div>
-      <div class="table-wrap"><table><thead><tr><th style="text-align:center">#</th><th>Candidate</th><th>Match Score</th><th>Category</th><th>Status</th><th>Recommendation</th><th style="text-align:right">Action</th></tr></thead><tbody>${appRows}</tbody></table></div>
-    </div>
+    ${!isEmp ? `
+      <div class="card mt-4">
+        <div class="card-header"><span class="card-title">Candidate Rankings</span><span class="badge badge-neutral">${apps.length} candidates</span></div>
+        <div class="table-wrap"><table><thead><tr><th style="text-align:center">#</th><th>Candidate</th><th>Match Score</th><th>Category</th><th>Status</th><th>Recommendation</th><th style="text-align:right">Action</th></tr></thead><tbody>${appRows}</tbody></table></div>
+      </div>
+    ` : ''}
   `;
     });
 
@@ -2478,8 +2620,11 @@
       } catch (e) { toast(e.message, 'error'); }
     }
 
-    // ── CANDIDATES ──────────────────────────────────────────────────
+    // ── CANDIDATES (HR Only) ────────────────────────────────────────
     route('/candidates', async () => {
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
+      if (isEmp) { navigate('/employee-portal'); return; }
+
       renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading candidates...</p></div>');
       const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
       const search = params.get('search') || '';
@@ -2509,8 +2654,11 @@
   `;
     });
 
-    // ── CANDIDATE DETAIL ────────────────────────────────────────────
+    // ── CANDIDATE DETAIL (HR Only) ──────────────────────────────────
     route('/candidates/:id', async (id) => {
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
+      if (isEmp) { navigate('/employee-portal'); return; }
+
       renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading candidate...</p></div>');
       const c = await api(`/api/candidates/${id}`);
       const apps = c.applications || [];
@@ -2560,23 +2708,29 @@
     // ── SCREENING REPORT ────────────────────────────────────────────
     route('/screening', async () => {
       renderApp('<div class="loading-state"><div class="spinner"></div></div>');
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
       const data = await api('/api/applications');
       const apps = data.applications || [];
       const rows = apps.length ? apps.map(a => `
     <tr onclick="navigate('/screening/${esc(a.id)}')">
-      <td><div class="text-label">${esc(a.candidate_name)}</div></td>
-      <td>${esc(a.job_title)}</td>
+      ${!isEmp ? `<td><div class="text-label">${esc(a.candidate_name)}</div></td>` : ''}
+      <td><div class="text-label">${esc(a.job_title)}</div><div class="text-code text-faint">${esc(a.department || '')}</div></td>
       <td>${scoreBadge(a.ats_score)}</td>
       <td>${statusBadge(a.status)}</td>
       <td>${formatDate(a.screened_at || a.applied_at)}</td>
-      <td style="text-align:right"><button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();navigate('/screening/${esc(a.id)}')">View Report</button></td>
+      <td style="text-align:right"><button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();navigate('/screening/${esc(a.id)}')">${isEmp ? 'View AI Feedback' : 'View Report'}</button></td>
     </tr>
-  `).join('') : '<tr><td colspan="6"><div class="empty-state"><span class="material-symbols-outlined">fact_check</span><div class="empty-state-title">No screenings yet</div><div class="empty-state-text">Screen a candidate resume to see analysis reports here.</div><button class="btn btn-accent" onclick="openScreenModal()"><span class="material-symbols-outlined">fact_check</span>Screen Resume</button></div></td></tr>';
+  `).join('') : `<tr><td colspan="${isEmp ? '5' : '6'}"><div class="empty-state"><span class="material-symbols-outlined">fact_check</span><div class="empty-state-title">No applications screened yet</div><div class="empty-state-text">${isEmp ? 'Submit an application with your resume to see your ATS analysis.' : 'Screen a resume to see analysis reports here.'}</div><button class="btn btn-accent" onclick="openScreenModal()"><span class="material-symbols-outlined">${isEmp ? 'upload_file' : 'fact_check'}</span>${isEmp ? 'Upload Resume' : 'Screen Resume'}</button></div></td></tr>`;
 
       document.getElementById('pageContent').innerHTML = `
-    <div class="page-header"><div class="page-header-left"><h1 class="page-title">Screening Reports</h1><p class="page-subtitle">AI-powered candidate analysis</p></div>
-    <div class="page-actions"><button class="btn btn-accent" onclick="openScreenModal()"><span class="material-symbols-outlined">add</span>Screen Resume</button></div></div>
-    <div class="card"><div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Position</th><th>Match Score</th><th>Status</th><th>Screened</th><th style="text-align:right">Action</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+    <div class="page-header">
+      <div class="page-header-left">
+        <h1 class="page-title">${isEmp ? 'My Applications & Feedback' : 'Screening Reports'}</h1>
+        <p class="page-subtitle">${isEmp ? 'Review AI-powered ATS screening results and recommendations' : 'AI-powered candidate analysis and evaluation'}</p>
+      </div>
+      <div class="page-actions"><button class="btn btn-accent" onclick="openScreenModal()"><span class="material-symbols-outlined">${isEmp ? 'upload_file' : 'add'}</span>${isEmp ? 'Upload Resume' : 'Screen Resume'}</button></div>
+    </div>
+    <div class="card"><div class="table-wrap"><table><thead><tr>${!isEmp ? '<th>Candidate</th>' : ''}<th>Position</th><th>Match Score</th><th>Status</th><th>Screened</th><th style="text-align:right">Action</th></tr></thead><tbody>${rows}</tbody></table></div></div>
   `;
     });
 
@@ -2626,11 +2780,11 @@
 
       const statusOptions = ['applied', 'screening', 'shortlisted', 'interview', 'hired', 'rejected'].map(s => `<option value="${s}" ${a.status === s ? 'selected' : ''}>${s}</option>`).join('');
 
-      const isStaff = currentUser && currentUser.role !== 'candidate';
+      const isStaff = currentUser && currentUser.role === 'hr';
       document.getElementById('pageContent').innerHTML = `
     <div class="page-header">
       <div class="page-header-left">
-        <a href="${isStaff ? '#/screening' : '#/candidate-portal'}" class="text-faint" style="text-decoration:none;font-size:0.75rem">← ${isStaff ? 'Screening Reports' : 'My Candidate Portal'}</a>
+        <a href="${isStaff ? '#/screening' : '#/employee-portal'}" class="text-faint" style="text-decoration:none;font-size:0.75rem">← ${isStaff ? 'Screening Reports' : 'My Employee Portal'}</a>
         <h1 class="page-title mt-2">Screening Report</h1>
         <p class="page-subtitle">${esc(a.candidate_name)} · ${esc(a.job_title)}</p>
       </div>
@@ -2673,7 +2827,7 @@
 
     ${sugg.length ? `<div class="card mt-3"><div class="card-header"><span class="card-title" style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>Action Plan</span></div><div class="card-body"><ul style="list-style:none">${suggHtml}</ul></div></div>` : ''}
 
-    <div class="ai-disclaimer"><span class="material-symbols-outlined">info</span>AI recommendations assist recruiters. Final hiring decisions are made by recruiters.</div>
+    <div class="ai-disclaimer"><span class="material-symbols-outlined">info</span>AI recommendations assist human decision-making. Final hiring decisions are verified by HR professionals.</div>
   `;
     });
 
@@ -2687,8 +2841,11 @@
       } catch (e) { toast(e.message, 'error'); }
     }
 
-    // ── APPLICATIONS PIPELINE ───────────────────────────────────────
+    // ── APPLICATIONS PIPELINE (HR Only) ─────────────────────────────
     route('/applications', async () => {
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
+      if (isEmp) { navigate('/employee-portal'); return; }
+
       renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading pipeline...</p></div>');
       const data = await api('/api/applications');
       const apps = data.applications || [];
@@ -2718,8 +2875,11 @@
   `;
     });
 
-    // ── ANALYTICS ───────────────────────────────────────────────────
+    // ── ANALYTICS (HR Only) ─────────────────────────────────────────
     route('/analytics', async () => {
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
+      if (isEmp) { navigate('/employee-portal'); return; }
+
       renderApp('<div class="loading-state"><div class="spinner"></div><p class="mt-2">Loading analytics...</p></div>');
       const data = await api('/api/analytics');
       const p = data.pipeline || {};
@@ -2770,8 +2930,11 @@
   `;
     });
 
-    // ── SETTINGS ────────────────────────────────────────────────────
+    // ── SETTINGS (HR Only) ──────────────────────────────────────────
     route('/settings', async () => {
+      const isEmp = currentUser?.role === 'employee' || currentUser?.role === 'candidate';
+      if (isEmp) { navigate('/employee-portal'); return; }
+
       renderApp('');
       let cats = [];
       try { const d = await api('/api/categories'); cats = d.categories || []; } catch (e) { }

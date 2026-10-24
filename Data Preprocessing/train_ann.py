@@ -9,10 +9,10 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import classification_report, accuracy_score, f1_score
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.layers import Dense, Dropout, Input
 
 ZIP_PATH = r"Data Preprocessing\Data Set.zip"
-STAGING_DIR = r"Backend\staging"
+STAGING_DIR = r"Backend\staging" 
 
 def main():
     print("--- Phase 2: Reproducible ANN Training ---")
@@ -60,7 +60,8 @@ def main():
     # 6. Build the Keras ANN Model
     print(f"\nBuilding model with input_dim=5000 and output_dim={num_classes}...")
     model = Sequential([
-        Dense(128, activation='relu', input_dim=5000),
+        Input(shape=(5000,)),
+        Dense(128, activation='relu'),
         Dropout(0.5),
         Dense(num_classes, activation='softmax')
     ])

@@ -638,7 +638,8 @@ def init_db():
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             email TEXT UNIQUE NOT NULL,
-            role TEXT DEFAULT 'recruiter',
+            role TEXT DEFAULT 'employee',
+            is_admin INTEGER DEFAULT 0,
             password_hash TEXT,
             avatar_url TEXT,
             created_at TEXT DEFAULT (datetime('now'))
@@ -696,42 +697,53 @@ def init_db():
         );
     """)
 
-    # Backward-compatible migration: add password_hash if not present
+    # Backward-compatible migration: add password_hash and is_admin if not present
     user_cols = [c[1] for c in db.execute("PRAGMA table_info(users)").fetchall()]
     if "password_hash" not in user_cols:
         db.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+    if "is_admin" not in user_cols:
+        db.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
 
-    # Seed or upgrade default demo accounts for all 4 roles
+    # Migrate legacy roles to two-role system: HR & Employee
+    db.execute("UPDATE users SET role = 'hr', is_admin = 1 WHERE role = 'admin'")
+    db.execute("UPDATE users SET role = 'hr' WHERE role IN ('recruiter', 'hiring_manager')")
+    db.execute("UPDATE users SET role = 'employee' WHERE role = 'candidate'")
+
+    # Seed or upgrade demo accounts for HR and Employee
     default_users = [
-        ("u_admin", "Alexander Vance", "admin@aihire.io", "admin", "Admin@123"),
-        ("u1", "Eleanor Vance", "eleanor@aihire.io", "recruiter", "Recruiter@123"),
-        ("u_manager", "Marcus Thorne", "manager@aihire.io", "hiring_manager", "Manager@123"),
-        ("u_candidate", "Sophia Chen", "candidate@aihire.io", "candidate", "Candidate@123")
+        ("u_hr", "Alexander Vance", "hr@aihire.io", "hr", 1, "HR@123"),
+        ("u_employee", "Sophia Chen", "employee@aihire.io", "employee", 0, "Employee@123"),
+        ("u_admin", "Alexander Vance", "admin@aihire.io", "hr", 1, "Admin@123"),
+        ("u_candidate", "Sophia Chen", "candidate@aihire.io", "employee", 0, "Candidate@123")
     ]
-    for uid, name, email, role, pwd in default_users:
+    for uid, name, email, role, is_adm, pwd in default_users:
         existing = db.execute("SELECT id, password_hash FROM users WHERE email = ?", (email,)).fetchone()
         hashed = generate_password_hash(pwd)
         if not existing:
             db.execute(
-                "INSERT INTO users (id, name, email, role, password_hash) VALUES (?, ?, ?, ?, ?)",
-                (uid, name, email, role, hashed)
+                "INSERT INTO users (id, name, email, role, is_admin, password_hash) VALUES (?, ?, ?, ?, ?, ?)",
+                (uid, name, email, role, is_adm, hashed)
             )
-        elif not existing[1]:
+        else:
             db.execute(
-                "UPDATE users SET password_hash = ?, role = ? WHERE id = ?",
-                (hashed, role, existing[0])
+                "UPDATE users SET password_hash = ?, role = ?, is_admin = ? WHERE id = ?",
+                (hashed, role, is_adm, existing[0])
             )
 
-    # Ensure a candidate profile exists for candidate@aihire.io
-    cand = db.execute("SELECT id FROM candidates WHERE email = ?", ("candidate@aihire.io",)).fetchone()
-    if not cand:
-        db.execute(
-            """INSERT INTO candidates (id, name, email, current_role, experience_years, skills, education)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            ("c_demo", "Sophia Chen", "candidate@aihire.io", "Full Stack Software Engineer", 4,
-             json.dumps(["Python", "JavaScript", "React", "Flask", "SQL", "Docker", "Git"]),
-             json.dumps(["B.S. in Computer Science"]))
-        )
+    # Ensure candidate profile exists for employee demo accounts
+    for emp_email in ["employee@aihire.io", "candidate@aihire.io"]:
+        cand = db.execute("SELECT id FROM candidates WHERE email = ?", (emp_email,)).fetchone()
+        if not cand:
+            db.execute(
+                """INSERT INTO candidates (id, name, email, current_role, experience_years, skills, education)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                ("c_" + uuid.uuid4().hex[:8], "Sophia Chen", emp_email, "Full Stack Software Engineer", 4,
+                 json.dumps(["Python", "JavaScript", "React", "Flask", "SQL", "Docker", "Git"]),
+                 json.dumps(["B.S. in Computer Science"]))
+            )
+
+    # Index to prevent duplicate applications
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_candidate_job ON applications(candidate_id, job_id)")
 
     # Seed sample jobs if empty
     cur = db.execute("SELECT COUNT(*) FROM jobs")
@@ -844,10 +856,11 @@ def require_roles(*roles):
             g.current_user = user
             role = (user.get("role") or "").lower()
             allowed = [r.lower() for r in roles]
-            is_recruiter = role in ("recruiter", "sr. talent partner", "talent partner")
-            has_role = role in allowed or (is_recruiter and "recruiter" in allowed)
-            # Admin has full privileges
-            if not has_role and role != "admin":
+            has_role = role in allowed
+            # HR users with is_admin have full HR/management access
+            if not has_role and user.get("is_admin") and "hr" in allowed:
+                has_role = True
+            if not has_role:
                 return jsonify({"error": f"Forbidden: Insufficient privileges. Required: {', '.join(roles)}"}), 403
             return f(*args, **kwargs)
         return decorated
@@ -861,7 +874,7 @@ def auth_register():
     name = (data.get("name") or "").strip()
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
-    requested_role = (data.get("role") or "candidate").strip().lower()
+    requested_role = (data.get("role") or "employee").strip().lower()
 
     if not name:
         return jsonify({"error": "Full name is required."}), 400
@@ -870,13 +883,13 @@ def auth_register():
     if len(password) < 6:
         return jsonify({"error": "Password must be at least 6 characters long."}), 400
 
-    # Public registration only creates candidates.
-    # Creating admin/recruiter/hiring_manager requires existing admin auth.
+    # Public registration only creates employee accounts.
+    # Creating HR accounts requires an authenticated HR admin (is_admin=1).
     current = get_current_user()
-    if current and current.get("role") == "admin":
-        role = requested_role if requested_role in ("admin", "recruiter", "hiring_manager", "candidate") else "candidate"
+    if current and current.get("is_admin"):
+        role = requested_role if requested_role in ("hr", "employee") else "employee"
     else:
-        role = "candidate"
+        role = "employee"
 
     db = get_db()
     existing = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
@@ -886,13 +899,14 @@ def auth_register():
     uid = "u_" + uuid.uuid4().hex[:8]
     hashed = generate_password_hash(password)
     now = datetime.now(timezone.utc).isoformat()
+    is_admin = 1 if (current and current.get("is_admin") and role == "hr" and data.get("is_admin")) else 0
 
     db.execute(
-        "INSERT INTO users (id, name, email, role, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (uid, name, email, role, hashed, now)
+        "INSERT INTO users (id, name, email, role, is_admin, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (uid, name, email, role, is_admin, hashed, now)
     )
 
-    if role == "candidate":
+    if role == "employee":
         cand = db.execute("SELECT id FROM candidates WHERE email = ?", (email,)).fetchone()
         if not cand:
             cid = "c_" + uuid.uuid4().hex[:8]
@@ -910,7 +924,8 @@ def auth_register():
             "id": uid,
             "name": name,
             "email": email,
-            "role": role
+            "role": role,
+            "is_admin": bool(is_admin)
         }
     }), 201
 
@@ -941,7 +956,8 @@ def auth_login():
             "id": user_dict["id"],
             "name": user_dict["name"],
             "email": user_dict["email"],
-            "role": user_dict["role"]
+            "role": user_dict["role"],
+            "is_admin": bool(user_dict.get("is_admin", 0))
         }
     })
 
@@ -958,12 +974,13 @@ def auth_logout():
 def auth_me():
     user = dict(g.current_user)
     user.pop("password_hash", None)
+    user["is_admin"] = bool(user.get("is_admin", 0))
     return jsonify({"user": user})
 
 
 # ── Dashboard endpoints ───────────────────────────────────────────────────────
 @app.route("/api/dashboard/stats", methods=["GET"])
-@require_roles("admin", "recruiter", "hiring_manager")
+@require_roles("hr")
 def dashboard_stats():
     db = get_db()
     stats = {
@@ -990,7 +1007,7 @@ def dashboard_stats():
 
 
 @app.route("/api/dashboard/recent", methods=["GET"])
-@require_roles("admin", "recruiter", "hiring_manager")
+@require_roles("hr")
 def dashboard_recent():
     db = get_db()
     rows = db.execute("""
@@ -1039,7 +1056,7 @@ def list_jobs():
 
 
 @app.route("/api/jobs", methods=["POST"])
-@require_roles("admin", "recruiter")
+@require_roles("hr")
 def create_job():
     data = request.get_json(force=True)
     if not data.get("title"):
@@ -1070,18 +1087,25 @@ def get_job(job_id):
     d["application_count"] = db.execute(
         "SELECT COUNT(*) FROM applications WHERE job_id = ?", (job_id,)
     ).fetchone()[0]
-    apps = db.execute("""
-        SELECT a.*, c.name as candidate_name, c.email as candidate_email,
-               c.current_role, c.experience_years
-        FROM applications a JOIN candidates c ON a.candidate_id = c.id
-        WHERE a.job_id = ? ORDER BY a.ats_score DESC
-    """, (job_id,)).fetchall()
-    d["applications"] = [row_to_dict(a) for a in apps]
+    
+    # Strictly isolated: only HR staff can view applicants and candidate rankings
+    user = get_current_user()
+    user_role = (user.get("role") or "").lower() if user else ""
+    if user_role == "hr":
+        apps = db.execute("""
+            SELECT a.*, c.name as candidate_name, c.email as candidate_email,
+                   c.current_role, c.experience_years
+            FROM applications a JOIN candidates c ON a.candidate_id = c.id
+            WHERE a.job_id = ? ORDER BY a.ats_score DESC
+        """, (job_id,)).fetchall()
+        d["applications"] = [row_to_dict(a) for a in apps]
+    else:
+        d["applications"] = []
     return jsonify(d)
 
 
 @app.route("/api/jobs/<job_id>", methods=["PUT"])
-@require_roles("admin", "recruiter")
+@require_roles("hr")
 def update_job(job_id):
     db = get_db()
     existing = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -1109,8 +1133,10 @@ def update_job(job_id):
 
 
 @app.route("/api/jobs/<job_id>", methods=["DELETE"])
-@require_roles("admin")
+@require_roles("hr")
 def delete_job(job_id):
+    if not g.current_user.get("is_admin"):
+        return jsonify({"error": "Administrator privileges required to delete jobs."}), 403
     db = get_db()
     db.execute("DELETE FROM applications WHERE job_id = ?", (job_id,))
     db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
@@ -1120,7 +1146,7 @@ def delete_job(job_id):
 
 # ── Candidates ────────────────────────────────────────────────────────────────
 @app.route("/api/candidates", methods=["GET"])
-@require_roles("admin", "recruiter", "hiring_manager")
+@require_roles("hr")
 def list_candidates():
     db = get_db()
     search = request.args.get("search", "")
@@ -1156,9 +1182,9 @@ def get_candidate(cid):
     if not c:
         return jsonify({"error": "Candidate not found"}), 404
     d = row_to_dict(c)
-    # Role isolation: candidates can only view their own candidate profile
+    # Role isolation: employees can only view their own candidate profile
     user_role = (g.current_user.get("role") or "").lower()
-    if user_role == "candidate" and d.get("email") != g.current_user.get("email"):
+    if user_role == "employee" and d.get("email") != g.current_user.get("email"):
         return jsonify({"error": "Forbidden: Cannot access other candidate profiles."}), 403
 
     apps = db.execute("""
@@ -1168,6 +1194,108 @@ def get_candidate(cid):
     """, (cid,)).fetchall()
     d["applications"] = [row_to_dict(a) for a in apps]
     return jsonify(d)
+
+
+@app.route("/api/candidates/<cid>/profile", methods=["PUT"])
+@require_auth
+def update_candidate_profile(cid):
+    db = get_db()
+    c = db.execute("SELECT * FROM candidates WHERE id = ?", (cid,)).fetchone()
+    if not c:
+        return jsonify({"error": "Candidate not found"}), 404
+    user_role = (g.current_user.get("role") or "").lower()
+    if user_role == "employee" and c["email"] != g.current_user.get("email"):
+        return jsonify({"error": "Forbidden: Cannot update other candidate profiles."}), 403
+    data = request.get_json(force=True) or {}
+    name = data.get("name", c["name"])
+    phone = data.get("phone", c["phone"])
+    experience_years = int(data.get("experience_years", c["experience_years"]))
+    skills = data.get("skills")
+    if isinstance(skills, list):
+        skills_str = json.dumps(skills)
+    elif isinstance(skills, str):
+        skills_str = skills
+    else:
+        skills_str = c["skills"]
+    education = data.get("education")
+    if isinstance(education, list):
+        edu_str = json.dumps(education)
+    elif isinstance(education, str):
+        edu_str = education
+    else:
+        edu_str = c["education"]
+    current_role = data.get("current_role", c["current_role"])
+    current_company = data.get("current_company", c["current_company"])
+
+    db.execute("""
+        UPDATE candidates
+        SET name = ?, phone = ?, experience_years = ?, skills = ?, education = ?, current_role = ?, current_company = ?
+        WHERE id = ?
+    """, (name, phone, experience_years, skills_str, edu_str, current_role, current_company, cid))
+    if c["email"]:
+        db.execute("UPDATE users SET name = ? WHERE email = ?", (name, c["email"]))
+    db.commit()
+    updated = db.execute("SELECT * FROM candidates WHERE id = ?", (cid,)).fetchone()
+    return jsonify(row_to_dict(updated))
+
+
+@app.route("/api/employee/profile", methods=["GET"])
+@require_auth
+def get_employee_profile():
+    db = get_db()
+    email = g.current_user.get("email")
+    c = db.execute("SELECT * FROM candidates WHERE email = ?", (email,)).fetchone()
+    if not c:
+        cid = "c_" + uuid.uuid4().hex[:8]
+        now = datetime.now(timezone.utc).isoformat()
+        db.execute(
+            """INSERT INTO candidates (id, name, email, current_role, experience_years, skills, education, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (cid, g.current_user.get("name", ""), email, "", 0, "[]", "[]", now)
+        )
+        db.commit()
+        c = db.execute("SELECT * FROM candidates WHERE id = ?", (cid,)).fetchone()
+    return jsonify(row_to_dict(c))
+
+
+@app.route("/api/employee/profile", methods=["PUT"])
+@require_auth
+def update_employee_profile():
+    db = get_db()
+    email = g.current_user.get("email")
+    c = db.execute("SELECT * FROM candidates WHERE email = ?", (email,)).fetchone()
+    if not c:
+        return jsonify({"error": "Profile not found"}), 404
+    data = request.get_json(force=True) or {}
+    name = data.get("name", c["name"])
+    phone = data.get("phone", c["phone"])
+    experience_years = int(data.get("experience_years", c["experience_years"]))
+    skills = data.get("skills")
+    if isinstance(skills, list):
+        skills_str = json.dumps(skills)
+    elif isinstance(skills, str):
+        skills_str = skills
+    else:
+        skills_str = c["skills"]
+    education = data.get("education")
+    if isinstance(education, list):
+        edu_str = json.dumps(education)
+    elif isinstance(education, str):
+        edu_str = education
+    else:
+        edu_str = c["education"]
+    current_role = data.get("current_role", c["current_role"])
+    current_company = data.get("current_company", c["current_company"])
+
+    db.execute("""
+        UPDATE candidates
+        SET name = ?, phone = ?, experience_years = ?, skills = ?, education = ?, current_role = ?, current_company = ?
+        WHERE id = ?
+    """, (name, phone, experience_years, skills_str, edu_str, current_role, current_company, c["id"]))
+    db.execute("UPDATE users SET name = ? WHERE email = ?", (name, email))
+    db.commit()
+    updated = db.execute("SELECT * FROM candidates WHERE id = ?", (c["id"],)).fetchone()
+    return jsonify(row_to_dict(updated))
 
 
 # ── Applications ──────────────────────────────────────────────────────────────
@@ -1190,8 +1318,8 @@ def list_applications():
     conditions = []
     params = []
 
-    # If candidate, only list their own applications
-    if user_role == "candidate":
+    # If employee, only list their own applications
+    if user_role == "employee":
         conditions.append("c.email = ?")
         params.append(g.current_user.get("email"))
 
@@ -1209,7 +1337,7 @@ def list_applications():
 
 
 @app.route("/api/applications/<app_id>/status", methods=["PUT"])
-@require_roles("admin", "recruiter", "hiring_manager")
+@require_roles("hr")
 def update_application_status(app_id):
     db = get_db()
     data = request.get_json(force=True)
@@ -1224,7 +1352,7 @@ def update_application_status(app_id):
 
 # ── Rankings ──────────────────────────────────────────────────────────────────
 @app.route("/api/jobs/<job_id>/rankings", methods=["GET"])
-@require_roles("admin", "recruiter", "hiring_manager")
+@require_roles("hr")
 def job_rankings(job_id):
     db = get_db()
     job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -1255,7 +1383,7 @@ def job_rankings(job_id):
 
 # ── Analytics ─────────────────────────────────────────────────────────────────
 @app.route("/api/analytics", methods=["GET"])
-@require_roles("admin", "recruiter")
+@require_roles("hr")
 def analytics():
     db = get_db()
     total_apps = db.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
@@ -1297,7 +1425,7 @@ def analytics():
 
 # ── Screen endpoint (uses existing AI pipeline) ──────────────────────────────
 @app.route("/api/screen", methods=["POST"])
-@require_roles("admin", "recruiter", "candidate")
+@require_roles("hr", "employee")
 def screen_candidate():
     """
     Screen a candidate's resume against a specific job.
@@ -1317,16 +1445,23 @@ def screen_candidate():
             return jsonify({"error": "Job not found."}), 404
 
         rf = request.files["resume"]
+        filename = rf.filename or ""
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in (".pdf", ".docx", ".doc", ".txt"):
+            return jsonify({"error": "Unsupported file format. Please upload a PDF, DOCX, DOC, or TXT file."}), 400
+
         rb = rf.read()
         if not rb:
             return jsonify({"error": "Empty resume file."}), 400
+        if len(rb) > 10 * 1024 * 1024:
+            return jsonify({"error": "File size exceeds 10MB limit."}), 400
 
-        resume_text = extract_text(rb, rf.filename)
+        resume_text = extract_text(rb, filename)
         if len(resume_text.strip()) < 50:
             return jsonify({"error": "Could not extract enough text from resume."}), 422
 
         # Save resume file
-        resume_filename = f"{uuid.uuid4().hex}_{rf.filename}"
+        resume_filename = f"{uuid.uuid4().hex}_{filename}"
         resume_path = os.path.join(UPLOADS_DIR, resume_filename)
         with open(resume_path, "wb") as f:
             f.write(rb)
@@ -1349,7 +1484,7 @@ def screen_candidate():
 
         # Extract candidate name & email or default to authenticated user
         user_role = (g.current_user.get("role") or "").lower()
-        if user_role == "candidate":
+        if user_role == "employee":
             candidate_name = g.current_user.get("name")
             candidate_email = g.current_user.get("email")
         else:
@@ -1375,36 +1510,70 @@ def screen_candidate():
                  datetime.now(timezone.utc).isoformat())
             )
 
-        # Create application
-        aid = "a" + uuid.uuid4().hex[:8]
+        # Check for duplicate application
+        existing_app = db.execute(
+            "SELECT id FROM applications WHERE candidate_id = ? AND job_id = ?",
+            (cid, job_id)
+        ).fetchone()
+
+        if existing_app and user_role == "employee":
+            return jsonify({"error": "You have already submitted an application for this position."}), 409
+
         now = datetime.now(timezone.utc).isoformat()
         kw_analysis = {
             "matched_keywords": analysis["matched_keywords"],
             "missing_from_jd": analysis["missing_keywords"],
             "missing_domain_skills": domain_missing[:15],
         }
-        db.execute("""
-            INSERT INTO applications
-            (id, candidate_id, job_id, status, ats_score, score_breakdown,
-             predicted_category, category_confidence, keyword_analysis,
-             sections_found, format_signals, suggestions, word_count,
-             applied_at, screened_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (
-            aid, cid, job_id, "screening", analysis["ats_score"],
-            json.dumps({
-                "keyword_match": analysis["keyword_score"],
-                "sections": analysis["section_score"],
-                "length": analysis["length_score"],
-                "format": analysis["format_score"],
-            }),
-            category, round(confidence * 100, 1),
-            json.dumps(kw_analysis),
-            json.dumps(analysis["sections_found"]),
-            json.dumps(analysis["format_signals"]),
-            json.dumps(suggestions),
-            analysis["word_count"], now, now
-        ))
+
+        if existing_app:
+            aid = existing_app["id"]
+            db.execute("""
+                UPDATE applications SET
+                    status = 'screening', ats_score = ?, score_breakdown = ?,
+                    predicted_category = ?, category_confidence = ?, keyword_analysis = ?,
+                    sections_found = ?, format_signals = ?, suggestions = ?, word_count = ?,
+                    screened_at = ?
+                WHERE id = ?
+            """, (
+                analysis["ats_score"],
+                json.dumps({
+                    "keyword_match": analysis["keyword_score"],
+                    "sections": analysis["section_score"],
+                    "length": analysis["length_score"],
+                    "format": analysis["format_score"],
+                }),
+                category, round(confidence * 100, 1),
+                json.dumps(kw_analysis),
+                json.dumps(analysis["sections_found"]),
+                json.dumps(analysis["format_signals"]),
+                json.dumps(suggestions),
+                analysis["word_count"], now, aid
+            ))
+        else:
+            aid = "a" + uuid.uuid4().hex[:8]
+            db.execute("""
+                INSERT INTO applications
+                (id, candidate_id, job_id, status, ats_score, score_breakdown,
+                 predicted_category, category_confidence, keyword_analysis,
+                 sections_found, format_signals, suggestions, word_count,
+                 applied_at, screened_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                aid, cid, job_id, "screening", analysis["ats_score"],
+                json.dumps({
+                    "keyword_match": analysis["keyword_score"],
+                    "sections": analysis["section_score"],
+                    "length": analysis["length_score"],
+                    "format": analysis["format_score"],
+                }),
+                category, round(confidence * 100, 1),
+                json.dumps(kw_analysis),
+                json.dumps(analysis["sections_found"]),
+                json.dumps(analysis["format_signals"]),
+                json.dumps(suggestions),
+                analysis["word_count"], now, now
+            ))
         db.commit()
 
         return jsonify({
@@ -1456,9 +1625,12 @@ def get_application(app_id):
 
     app_data = row_to_dict(row)
     user_role = (g.current_user.get("role") or "").lower()
-    # Candidate can only see their own application
-    if user_role == "candidate" and app_data.get("candidate_email") != g.current_user.get("email"):
+    # Employee can only see their own application
+    if user_role == "employee" and app_data.get("candidate_email") != g.current_user.get("email"):
         return jsonify({"error": "Forbidden: Cannot access other candidate applications."}), 403
+
+    if user_role == "employee":
+        app_data.pop("resume_path", None)
 
     return jsonify(app_data)
 
